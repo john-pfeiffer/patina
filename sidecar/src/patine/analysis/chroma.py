@@ -1,6 +1,7 @@
 """Chroma features for chord, key and activity estimation (handoff §4.5–4.7).
 
-One constant-Q transform (C1–B7, 12 bins per octave, hop 2048 at 22050 Hz, so
+One constant-Q transform (C1–B7, 36 bins per octave folded to semitones so
+adjacent pitch classes barely leak into each other, hop 2048 at 22050 Hz, so
 about 93 ms per frame) feeds three chroma views:
 
 * ``weighted`` — **bass-weighted** chroma. The low octaves count more, so a
@@ -9,8 +10,9 @@ about 93 ms per frame) feeds three chroma views:
   separately so inversions are visible.
 * ``treble`` — the upper octaves only (C4–B7), used by the busyness score (§4.7).
 
-Magnitudes are compressed with a power law so one loud partial does not swamp
-the softer chord tones. All arrays are float32."""
+Magnitudes are used linearly (`COMPRESSION` = 1): compressing them boosts the
+noise floor and click leakage until every frame looks flat. All arrays are
+float32."""
 
 from __future__ import annotations
 
@@ -22,17 +24,18 @@ import numpy as np
 ANALYSIS_SR = 22050
 CHROMA_HOP = 2048               # 92.9 ms at 22050 Hz; divisible by 2**(N_OCTAVES-1)
 N_OCTAVES = 7
-BINS_PER_OCTAVE = 12
+BINS_PER_OCTAVE = 12                             # semitone bins kept per octave
+CQT_BINS_PER_OCTAVE = 36                         # CQT resolution before folding
 N_BINS = N_OCTAVES * BINS_PER_OCTAVE
 FMIN_HZ = float(librosa.note_to_hz("C1"))      # 32.70 Hz
-COMPRESSION = 0.5                                # magnitude exponent
+COMPRESSION = 1.0                                # magnitude exponent
 
 # Per-octave weights, index 0 = C1–B3 ... 6 = C7–B7.
 OCTAVE_WEIGHTS = np.array([0.6, 1.0, 1.0, 0.8, 0.5, 0.3, 0.15], dtype=np.float32)
 BASS_WEIGHTS = np.array([1.0, 1.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 TREBLE_WEIGHTS = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float32)
 
-_MIN_SIGNAL_S = 1.0  # pad shorter inputs so the low CQT filters have room
+_MIN_SIGNAL_S = 4.0  # pad shorter inputs so the low CQT octaves have room
 
 
 @dataclass
@@ -130,17 +133,20 @@ def compute_chroma(
     if y.size < min_len:
         y = np.pad(y, (0, min_len - y.size))
     tuning = float(np.clip(tuning_cents, -50.0, 50.0)) / 100.0
+    sub = CQT_BINS_PER_OCTAVE // BINS_PER_OCTAVE
     c = librosa.cqt(
         y,
         sr=sr,
         hop_length=hop,
-        fmin=FMIN_HZ,
-        n_bins=N_BINS,
-        bins_per_octave=BINS_PER_OCTAVE,
-        tuning=tuning,
+        fmin=FMIN_HZ * 2.0 ** (-(sub // 2) / CQT_BINS_PER_OCTAVE),   # centre sub-bin on the semitone
+        n_bins=N_OCTAVES * CQT_BINS_PER_OCTAVE,
+        bins_per_octave=CQT_BINS_PER_OCTAVE,
+        tuning=tuning * sub,
     )
     mag = np.abs(c).astype(np.float32)
-    mag = np.power(mag, COMPRESSION, dtype=np.float32)
+    mag = mag.reshape(N_BINS, sub, mag.shape[1]).sum(axis=1)       # fold sub-bins per semitone
+    if COMPRESSION != 1.0:
+        mag = np.power(mag, COMPRESSION, dtype=np.float32)
     n_frames = int(np.floor(duration * sr / hop)) + 1
     n_frames = max(1, min(n_frames, mag.shape[1]))
     mag = mag[:, :n_frames]

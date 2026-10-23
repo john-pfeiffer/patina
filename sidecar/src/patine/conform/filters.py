@@ -87,14 +87,14 @@ def zero_phase_highpass(y: np.ndarray, sr: int, fc: float, order: int = 2) -> np
     return signal.sosfiltfilt(sos, y, axis=1).astype(np.float32)
 
 
-def split_bands(y: np.ndarray, sr: int, edges_hz: list[float]) -> list[np.ndarray]:
+def split_bands(y: np.ndarray, sr: int, edges_hz: list[float], order: int = 4) -> list[np.ndarray]:
     """Split into len(edges)+1 bands with zero-phase crossovers; the bands sum
     back to the input."""
     y = as_2d(y)
     bands: list[np.ndarray] = []
     rest = y
     for fc in edges_hz:
-        low = zero_phase_lowpass(rest, sr, fc)
+        low = zero_phase_lowpass(rest, sr, fc, order)
         bands.append(low)
         rest = rest - low
     bands.append(rest.astype(np.float32))
