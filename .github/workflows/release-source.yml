@@ -1,0 +1,23 @@
+name: Release source
+
+# Pull requests into main may only come from develop (a release) or a
+# hotfix/* branch. The main ruleset requires this check, which is how the
+# feature → develop → main path is enforced; GitHub rulesets cannot
+# restrict a PR's source branch on their own.
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  release-source:
+    name: Release source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Source branch must be develop or hotfix/*
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          case "$HEAD_REF" in
+            develop|hotfix/*) echo "ok: $HEAD_REF" ;;
+            *) echo "::error::Pull requests into main must come from develop or hotfix/*, not '$HEAD_REF'"; exit 1 ;;
+          esac
