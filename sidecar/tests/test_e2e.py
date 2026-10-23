@@ -5,8 +5,7 @@ import time
 
 import numpy as np
 import soundfile as sf
-
-from .conftest import synth_chords
+from conftest import synth_chords
 
 
 def _wait(client, pred, timeout=120.0, every=0.2):

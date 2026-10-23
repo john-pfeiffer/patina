@@ -95,6 +95,17 @@ the repository); the workflow produces unsigned dev artefacts named
 - **Minor-key roman numerals** follow the pop-harmony reading: `VI`, `VII`,
   `bVI`, `bVII` all mean the natural-minor degrees (Ab, Bb in C minor);
   `vii°` is the leading-tone chord (B°). Tests pin this.
+- **Tuning target is the anchor's tuning, not A440, when a set has an anchor.**
+  The handoff says "correct `tuning_cents` to A440", but the anchor is identity
+  through the tonal layer, so a 15-cent-sharp anchor would stay sharp while
+  every member went to A440 and the set would read as two tunings. Members are
+  resampled to the anchor's tuning instead; without an anchor (previews on an
+  empty set) the target is A440. **Raise if A440 was meant literally** — then
+  the anchor would also need correcting, which breaks its identity.
+- **Beat 0 of every render is the snap point.** Render sample 0 is where
+  playback starts (first onset unless Keep pre-roll); retrigger restarts there
+  and kit beat markers count from it. Nudge moves the play start without
+  moving the grid.
 - **Typing a session bpm pins it**; otherwise session tempo follows the anchor.
 - **Inversions are tracked, shown, never matched** (§10) — `bass_note` is on
   every region and slot but strictness ignores it.
