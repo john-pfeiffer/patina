@@ -513,14 +513,16 @@ def _snap_boundaries(
     boundaries move together so tiling survives; a move that would empty a
     region is skipped."""
 
+    attack_tol = min(0.15, max(0.06, beat_tol / 0.35 * 0.25)) if beat_tol > 0 else 0.0
+
     def snap(t: float) -> float:
         if beats and beat_tol > 0:
             b = snap_to_onset(t, beats, beat_tol)
             if b != t:
-                # On the grid, at the attack: trackers place a beat a few ms
-                # after the hit, so land on the onset that caused it when one
-                # sits within 60 ms of the beat.
-                return snap_to_onset(b, onsets, 0.06) if onsets else b
+                # On the grid, at the attack: trackers place a beat some tens
+                # of ms after the (backtracked) onset that caused it, so land
+                # on that onset when one sits within a quarter beat of it.
+                return snap_to_onset(b, onsets, attack_tol) if onsets else b
         return snap_to_onset(t, onsets, tol) if onsets else t
 
     n = len(starts)
