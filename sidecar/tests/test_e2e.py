@@ -76,7 +76,7 @@ def test_full_flow(app_client, tmp_data_dir):
         return rs if rs and all(x["status"] == "ready" for x in rs.values()) else None
 
     rs = _wait(app_client, ready)
-    for slot_id, status in rs.items():
+    for status in rs.values():
         assert status["url"].startswith("/renders/")
         wav = app_client.get(status["url"])
         assert wav.status_code == 200 and wav.headers["content-type"].startswith("audio/wav")
@@ -103,8 +103,13 @@ def test_full_flow(app_client, tmp_data_dir):
     # Export all four kinds.
     out = tmp_data_dir / "out"
     for kind in ("midi", "kit", "stems", "full"):
-        job = app_client.post("/export", json={"progression_id": p["id"], "kind": kind, "out_dir": str(out / kind)}).json()
-        job = _wait(app_client, lambda: (lambda j: j if j["status"] in ("done", "failed") else None)(app_client.get(f"/jobs/{job['id']}").json()))
+        job_id = app_client.post("/export", json={"progression_id": p["id"], "kind": kind, "out_dir": str(out / kind)}).json()["id"]
+
+        def finished(jid=job_id):
+            j = app_client.get(f"/jobs/{jid}").json()
+            return j if j["status"] in ("done", "failed") else None
+
+        job = _wait(app_client, finished)
         assert job["status"] == "done", job["error"]
         assert job["result"]["files"], kind
     full = [f for f in (out / "full").iterdir() if f.suffix == ".wav"]
