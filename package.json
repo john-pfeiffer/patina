@@ -17,6 +17,8 @@
     "test:sidecar": "uv run --directory sidecar pytest -q",
     "test:desktop": "pnpm --filter @patine/desktop test",
     "lint": "uv run --directory sidecar ruff check src tests && pnpm --filter @patine/desktop typecheck",
-    "bootstrap": "uv sync --project sidecar --all-extras --no-extra ml && pnpm install"
+    "bootstrap": "uv sync --project sidecar --all-extras --no-extra ml && pnpm install",
+    "version:check": "node scripts/bump-version.mjs --check",
+    "version:bump": "node scripts/bump-version.mjs"
   }
 }
