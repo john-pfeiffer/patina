@@ -27,6 +27,7 @@ def app_client(tmp_data_dir):
     with TestClient(app, headers={"X-Patine-Token": "test-token"}) as client:
         client.state_obj = state  # type: ignore[attr-defined]
         yield client
+    state.close()
 
 
 def synth_chords(path: Path, chords=((0, "maj"), (5, "maj"), (7, "maj"), (0, "maj")), bpm=120.0,

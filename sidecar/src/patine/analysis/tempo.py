@@ -74,9 +74,11 @@ def bpm_from_beats(beats: np.ndarray, fallback: float) -> float:
 
 
 def tempo_confidence(env: np.ndarray, beats: np.ndarray, bpm: float, sr: int, hop: int) -> float:
-    """0..1 from (a) how periodic the onset envelope is at the beat period
-    (normalised autocorrelation) and (b) how much onset energy sits on the
-    tracked beats compared with the rest of the envelope."""
+    """0..1, mostly how periodic the onset envelope is at the beat period
+    (normalised autocorrelation: clicks ≈ 0.9, noise ≈ 0.1, a pad with no
+    transients ≈ 0), with a small term for how much onset energy sits on the
+    tracked beats. The beat tracker always returns *something*, so this is
+    what tells the UI how much to trust it (§7.1)."""
     if env.size < 8 or bpm <= 0 or beats.size < 2:
         return 0.0
     x = env.astype(np.float64) - float(env.mean())
@@ -92,7 +94,7 @@ def tempo_confidence(env: np.ndarray, beats: np.ndarray, bpm: float, sr: int, ho
     med = float(np.median(env))
     hi = float(np.percentile(env, 95))
     alignment = float(np.clip((at_beats - med) / max(hi - med, 1e-9), 0.0, 1.0))
-    return float(np.clip(0.6 * periodicity + 0.4 * alignment, 0.0, 1.0))
+    return float(np.clip(0.9 * periodicity + 0.1 * alignment, 0.0, 1.0))
 
 
 def _track_librosa(y: np.ndarray, sr: int, env: np.ndarray, hop: int) -> TempoResult:

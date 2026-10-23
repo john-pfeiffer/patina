@@ -11,7 +11,9 @@ histogram against a shifted reference — but:
 * candidates are weighted by salience (their magnitude), and only the salient
   half of each window is kept;
 * the histogram is circular (±50 cents wrap) and lightly smoothed before the
-  peak is read, with parabolic interpolation for sub-cent precision.
+  peak is read, with parabolic interpolation for sub-cent precision;
+* pitch tracks below 100 Hz are ignored: with a 0.37 s window their
+  frequency estimate is several cents off and they only add bias.
 
 The result is capped to ±50 cents by construction."""
 
@@ -33,10 +35,10 @@ def tuning_histogram(
     sr: int,
     *,
     window_s: float = 20.0,
-    fmin: float = 55.0,
-    fmax: float = 2200.0,
-    n_fft: int = 2048,
-    hop_length: int = 1024,
+    fmin: float = 100.0,
+    fmax: float = 2000.0,
+    n_fft: int = 8192,
+    hop_length: int = 2048,
 ) -> np.ndarray:
     """Circular histogram (100 bins of 1 cent, bin 0 = exactly in tune) of
     pitch residuals, salience-weighted and window-normalised."""

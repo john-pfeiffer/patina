@@ -4,15 +4,20 @@ One constant-Q transform (C1–B7, 36 bins per octave folded to semitones so
 adjacent pitch classes barely leak into each other, hop 2048 at 22050 Hz, so
 about 93 ms per frame) feeds three chroma views:
 
-* ``weighted`` — **bass-weighted** chroma. The low octaves count more, so a
-  melody line leaning on a 9th up top cannot flip the chord estimate (§4.5).
+* ``weighted`` — **bass-weighted** chroma. The chord register (C3–B4) and the
+  bass octaves count most and the top octaves little, so a melody line leaning
+  on a 9th up top cannot flip the chord estimate (§4.5), while a bass on the
+  third (C/E) still reads as C major rather than E minor.
 * ``bass`` — the lowest octaves only (C1–B3), used to report ``bass_note``
   separately so inversions are visible.
 * ``treble`` — the upper octaves only (C4–B7), used by the busyness score (§4.7).
 
-Magnitudes are used linearly (`COMPRESSION` = 1): compressing them boosts the
-noise floor and click leakage until every frame looks flat. All arrays are
-float32."""
+CQT magnitudes are kept linear (`COMPRESSION` = 1; compressing them before
+folding boosts leakage until every frame looks flat), but the folded chord
+chroma (`weighted`, `treble`) is square-rooted (`CHROMA_COMPRESSION`): a bass
+playing the root otherwise dominates the vector so much that a 7th or a
+sus tone can no longer be told apart from a plain triad. `bass` and `energy`
+stay linear. All arrays are float32."""
 
 from __future__ import annotations
 
@@ -28,10 +33,11 @@ BINS_PER_OCTAVE = 12                             # semitone bins kept per octave
 CQT_BINS_PER_OCTAVE = 36                         # CQT resolution before folding
 N_BINS = N_OCTAVES * BINS_PER_OCTAVE
 FMIN_HZ = float(librosa.note_to_hz("C1"))      # 32.70 Hz
-COMPRESSION = 1.0                                # magnitude exponent
+COMPRESSION = 1.0                                # CQT magnitude exponent (before folding)
+CHROMA_COMPRESSION = 0.5                         # exponent on the folded chord chroma
 
 # Per-octave weights, index 0 = C1–B3 ... 6 = C7–B7.
-OCTAVE_WEIGHTS = np.array([0.6, 1.0, 1.0, 0.8, 0.5, 0.3, 0.15], dtype=np.float32)
+OCTAVE_WEIGHTS = np.array([0.5, 0.8, 1.0, 1.0, 0.6, 0.35, 0.2], dtype=np.float32)
 BASS_WEIGHTS = np.array([1.0, 1.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 TREBLE_WEIGHTS = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float32)
 
@@ -153,18 +159,26 @@ def compute_chroma(
     times = librosa.frames_to_time(np.arange(n_frames), sr=sr, hop_length=hop)
     freqs = librosa.cqt_frequencies(N_BINS, fmin=FMIN_HZ, bins_per_octave=BINS_PER_OCTAVE, tuning=tuning)
     weighted = fold_octaves(mag, OCTAVE_WEIGHTS)
+    energy = weighted.sum(axis=0).astype(np.float32)
     return ChromaFeatures(
         sr=int(sr),
         hop=int(hop),
         times=times.astype(np.float64),
         cqt=mag,
         freqs=np.asarray(freqs, dtype=np.float64),
-        weighted=weighted,
+        weighted=compress(weighted),
         bass=fold_octaves(mag, BASS_WEIGHTS),
-        treble=fold_octaves(mag, TREBLE_WEIGHTS),
-        energy=weighted.sum(axis=0).astype(np.float32),
+        treble=compress(fold_octaves(mag, TREBLE_WEIGHTS)),
+        energy=energy,
         duration=duration,
     )
+
+
+def compress(chroma: np.ndarray) -> np.ndarray:
+    """Power-law compression of a folded chroma (see module docstring)."""
+    if CHROMA_COMPRESSION == 1.0:
+        return chroma
+    return np.power(np.maximum(chroma, 0.0), CHROMA_COMPRESSION, dtype=np.float32)
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray, eps: float = 1e-9) -> float:

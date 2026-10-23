@@ -41,6 +41,10 @@ class AppState:
         self.events = EventBus()
         self.worker = JobWorker(self.db, self.events, threads=workers)
 
+    def close(self) -> None:
+        self.worker.stop()
+        self.db.close()
+
     def ml_available(self) -> bool:
         try:
             import torch  # noqa: F401
@@ -67,7 +71,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
         try:
             yield
         finally:
-            state.worker.stop()
+            state.close()
 
     app = FastAPI(title="Patine sidecar", version=__version__, lifespan=lifespan)
     app.state.ctx = state

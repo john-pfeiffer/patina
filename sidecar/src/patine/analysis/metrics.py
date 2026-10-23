@@ -186,33 +186,45 @@ def low_rolloff_hz(spectra: Spectra) -> float | None:
     return float(grid[0])
 
 
-def bass_mono_hz(spectra: Spectra, sr: int, *, threshold: float = 0.9, f_min: float = 20.0) -> float | None:
+def _sixth_octave_bands(f_lo: float, f_hi: float) -> np.ndarray:
+    n = int(math.floor(6.0 * math.log2(max(f_hi, f_lo * 1.0001) / f_lo))) + 1
+    return f_lo * 2.0 ** (np.arange(n + 1) / 6.0)
+
+
+def bass_mono_hz(spectra: Spectra, sr: int, *, threshold: float = 0.9, gate_db: float = -40.0) -> float | None:
     """Highest frequency below which the L/R correlation stays above
-    `threshold`. The correlation is energy-weighted over everything below the
-    candidate frequency, so empty gaps between harmonics (where only the
-    noise floor lives) cannot read as decorrelated bass, and nothing counts
-    until 0.1 % of the energy has accumulated. Nyquist for mono or fully
-    correlated input; None for silence."""
+    `threshold`: 1/6-octave bands are scanned upward and the lower edge of
+    the first decorrelated band is returned. Bands more than `gate_db` under
+    the loudest band carry no image worth measuring (the noise floor in a
+    gap between harmonics is uncorrelated but it is not bass) and are
+    skipped. Nyquist for mono or fully correlated input; None for silence."""
     nyquist = float(sr) / 2.0
     if not spectra.stereo:
         return nyquist
     assert spectra.left is not None and spectra.right is not None and spectra.cross is not None
+    edges = _sixth_octave_bands(20.0, nyquist)
     f = spectra.freqs
-    sel = f >= f_min
-    if not np.any(sel):
+    levels, corrs, lows = [], [], []
+    for lo, hi in zip(edges[:-1], edges[1:], strict=True):
+        sel = (f >= lo) & (f < hi)
+        if not np.any(sel):
+            continue
+        pxx = float(spectra.left[sel].sum())
+        pyy = float(spectra.right[sel].sum())
+        pxy = float(spectra.cross[sel].sum())
+        levels.append(pxx + pyy)
+        corrs.append(pxy / (math.sqrt(pxx) * math.sqrt(pyy) + 1e-30))
+        lows.append(float(lo))
+    if not levels:
         return nyquist
-    pxx = np.cumsum(spectra.left[sel])
-    pyy = np.cumsum(spectra.right[sel])
-    pxy = np.cumsum(spectra.cross[sel])
-    total = float(pxx[-1] + pyy[-1])
-    if total <= 1e-20:
+    peak = max(levels)
+    if peak <= 1e-20:
         return None
-    corr = pxy / np.sqrt(pxx * pyy + _EPS)
-    level = (pxx + pyy) / total
-    bad = np.where((corr < threshold) & (level > 1e-3))[0]
-    if bad.size == 0:
-        return nyquist
-    return float(f[sel][bad[0]])
+    gate = peak * 10.0 ** (gate_db / 10.0)
+    for level, corr, lo in zip(levels, corrs, lows, strict=True):
+        if level >= gate and corr < threshold:
+            return lo
+    return nyquist
 
 
 def sub_ratio(spectra: Spectra) -> float | None:
@@ -232,9 +244,10 @@ def noise_floor(mono: np.ndarray, sr: int) -> tuple[float | None, list[float]]:
         x = np.pad(x, (0, nfr - x.size))
     hop = nfr // 2
     n_frames = 1 + (x.size - nfr) // hop
-    pos = np.arange(n_frames)[:, None] * hop + np.arange(nfr)[None, :]
-    frames = x[pos]
-    ms = np.mean(frames.astype(np.float64) ** 2, axis=1)
+    # per-frame mean square from a cumulative sum of squares: one pass, no frame matrix
+    cs = np.concatenate([[0.0], np.cumsum(x.astype(np.float64) ** 2)])
+    starts = np.arange(n_frames) * hop
+    ms = (cs[starts + nfr] - cs[starts]) / nfr
     level_db = 10.0 * np.log10(np.maximum(ms, _EPS))
     valid = np.where(level_db > -100.0)[0]
     if valid.size == 0:
@@ -243,7 +256,8 @@ def noise_floor(mono: np.ndarray, sr: int) -> tuple[float | None, list[float]]:
     order = valid[np.argsort(level_db[valid], kind="stable")[:k]]
     floor_db = _db(float(ms[order].mean()))
     win = hann(nfr, sym=False)
-    spec = np.fft.rfft(frames[order] * win[None, :], axis=-1)
+    frames = x[starts[order][:, None] + np.arange(nfr)[None, :]]
+    spec = np.fft.rfft(frames * win[None, :], axis=-1)
     psd = np.mean(np.abs(spec) ** 2, axis=0) / (sr * float(np.sum(win**2)))
     psd[1:-1] *= 2.0
     freqs = np.fft.rfftfreq(nfr, d=1.0 / sr)

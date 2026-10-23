@@ -34,7 +34,7 @@ import librosa
 import numpy as np
 
 from ..theory import ANALYSIS_QUALITIES, QUALITY_INTERVALS
-from .chroma import ChromaFeatures, cosine_similarity
+from .chroma import CHROMA_COMPRESSION, ChromaFeatures, cosine_similarity
 from .onsets import snap_to_onset
 
 log = logging.getLogger(__name__)
@@ -128,7 +128,8 @@ class TemplateBackend:
         else:
             level_db = 20.0 * np.log10(np.maximum(energy, _EPS) / ref)
         silence = 1.0 / (1.0 + np.exp(-(self.silence_db - level_db) / 3.0))
-        l1 = x / (x.sum(axis=0, keepdims=True) + _EPS)
+        lin = np.power(x, 1.0 / CHROMA_COMPRESSION)        # flatness on the linear chroma
+        l1 = lin / (lin.sum(axis=0, keepdims=True) + _EPS)
         geo = np.exp(np.mean(np.log(l1 + 1e-6), axis=0))
         flatness = geo / (np.mean(l1, axis=0) + _EPS)
         flat_score = np.clip((flatness - self.flatness_threshold) / 0.25, 0.0, 1.0)
@@ -561,7 +562,9 @@ def segment_chords(
     starts = [feats.frame_start_s(a) for _, _, a, _ in items]
     ends = [feats.frame_end_s(b - 1) for _, _, _, b in items]
     if onsets:
-        tol = hop_s if snap_tolerance_s is None else snap_tolerance_s
+        # the CQT frame grid plus its low-octave smearing puts a boundary up to
+        # about a frame and a half from the attack that caused it
+        tol = 1.5 * hop_s if snap_tolerance_s is None else snap_tolerance_s
         starts, ends = _snap_boundaries(starts, ends, onsets, tol, min_region_s * 0.5)
     segments: list[ChordSegment] = []
     for (root, quality, a, b), s, e in zip(items, starts, ends, strict=True):

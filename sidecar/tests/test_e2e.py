@@ -118,5 +118,7 @@ def test_full_flow(app_client, tmp_data_dir):
     expected = beats * 60.0 / app_client.get(f"/sets/{st['id']}").json()["session_bpm"]
     assert abs(len(y) / sr - expected) < 0.05, (len(y) / sr, expected)
     assert np.abs(y).max() > 0.01
-    assert (out / "kit" / "patine.json").exists()
+    kit_meta = list((out / "kit").rglob("patine.json"))
+    assert len(kit_meta) == 1 and kit_meta[0].parent.name.endswith("_kit")
+    assert any(f.suffix == ".wav" for f in kit_meta[0].parent.iterdir())
     assert any(f.suffix == ".mid" for f in (out / "midi").iterdir())

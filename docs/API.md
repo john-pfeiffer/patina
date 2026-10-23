@@ -87,7 +87,7 @@ SSE events (`event:` name, `data:` JSON):
 | Method | Path | Body → Response |
 |---|---|---|
 | GET | `/renders/{cache_key}.wav` | → `audio/wav` float32, session sample rate. Served only when `status == ready`. |
-| POST | `/export` | `ExportRequest {progression_id, kind: full\|stems\|kit\|midi, out_dir, loops}` → `Job`; result `{files: string[]}`. Renders that are missing are produced first. |
+| POST | `/export` | `ExportRequest {progression_id, kind: full\|stems\|kit\|midi, out_dir, loops}` → `Job`; result `{files: string[]}`. Renders that are missing are produced first. `full` writes `<name>_full.wav`, `stems` one WAV per slot, `midi` `<name>.mid`, and `kit` a self-contained folder `<name>_kit/` holding `NN_<chord>.wav` per slot plus `patine.json`. |
 
 ## Jobs
 

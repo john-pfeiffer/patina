@@ -37,6 +37,7 @@ def chord_signal(
     bpm: float = 120.0,
     beats_per_chord: float = 4.0,
     bass: bool = True,
+    bass_interval: int = 0,
     clicks: bool = True,
     melody: bool = False,
     detune_cents: float = 0.0,
@@ -45,7 +46,8 @@ def chord_signal(
     chord_octave: int = 3,
     seed: int = 0,
 ) -> tuple[np.ndarray, float]:
-    """Sustained chords (bass an octave below the triad, five harmonics each),
+    """Sustained chords (bass an octave below the triad, on `bass_interval`
+    semitones above the root so inversions can be built; five harmonics each),
     a short click on every beat, optional 8th-note melody with non-chord tones
     in the upper register, mild noise. Returns ((channels, n) float32, duration)."""
     rng = np.random.default_rng(seed)
@@ -65,7 +67,7 @@ def chord_signal(
         for iv in QUALITY_INTERVALS[quality]:
             seg += tone(midi_to_hz(base_midi + root + iv, detune_cents), seg_t, amp=0.18)
         if bass:
-            seg += tone(midi_to_hz(base_midi - 12 + root, detune_cents), seg_t, amp=0.25, n_harm=4)
+            seg += tone(midi_to_hz(base_midi - 12 + root + bass_interval, detune_cents), seg_t, amp=0.25, n_harm=4)
         if melody:
             # 8th notes: 9th, 11th, 13th and chromatic neighbours above the chord
             pattern = [14, 17, 21, 16, 18, 14, 13, 19]

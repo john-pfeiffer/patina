@@ -75,10 +75,16 @@ class JobWorker:
             t.start()
             self._threads.append(t)
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 5.0) -> None:
+        """Stop the workers and close their database connections. Joining
+        matters on Windows, where an open SQLite handle blocks deleting the
+        data directory (tests use temp dirs)."""
         self._stop.set()
         for _ in self._threads:
             self._queue.put((-1, 0, ""))
+        for t in self._threads:
+            t.join(timeout)
+        self._threads.clear()
 
     def _requeue_unfinished(self) -> None:
         rows = self.db.all("SELECT id, kind, status FROM jobs WHERE status IN ('queued','running')")
@@ -161,6 +167,12 @@ class JobWorker:
     # --- execution ------------------------------------------------------------------
 
     def _run(self) -> None:
+        try:
+            self._loop()
+        finally:
+            self.db.close()   # this thread's connection
+
+    def _loop(self) -> None:
         while not self._stop.is_set():
             _, _, job_id = self._queue.get()
             if not job_id:

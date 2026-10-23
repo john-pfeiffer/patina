@@ -88,3 +88,4 @@ def test_unfinished_jobs_requeue_on_restart(tmp_data_dir):
     done = _wait(lambda: (lambda x: x if x.status == "done" else None)(w2.get(j.id)))
     assert done.result == {"ran": True}
     w2.stop()
+    db.close()

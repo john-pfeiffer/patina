@@ -132,9 +132,15 @@ def _region_features(
 
 def _key_context_for(ctx: AnalysisContext, feats: ChromaFeatures, start_s: float, end_s: float) -> str | None:
     if ctx.features is not None and ctx.features.n_frames > 0:
-        return keymod.key_context(ctx.features.weighted, ctx.features.times, start_s, end_s, global_scores=ctx.key_scores)
+        return keymod.key_context(
+            ctx.features.weighted, ctx.features.times, start_s, end_s,
+            chord_frames=ctx.chord_frames, global_scores=ctx.key_scores,
+        )
     if ctx.chroma is not None and ctx.frame_times and ctx.chroma.shape[1] == len(ctx.frame_times):
-        return keymod.key_context(ctx.chroma, np.asarray(ctx.frame_times), start_s, end_s, global_scores=ctx.key_scores)
+        return keymod.key_context(
+            ctx.chroma, np.asarray(ctx.frame_times), start_s, end_s,
+            chord_frames=ctx.chord_frames, global_scores=ctx.key_scores,
+        )
     local, _, _ = keymod.estimate_key(feats)
     if ctx.key_scores is not None and np.any(ctx.key_scores):
         return keymod.key_context(feats.weighted, feats.times, -1e9, 1e9, global_scores=ctx.key_scores)
@@ -246,7 +252,7 @@ def analyze_decoded(
 
     # §4.4 onsets
     _report(progress, 0.32, "Detecting onsets")
-    onsets = [o for o in onsetmod.detect_onsets(env, sr_a, tempo_result.hop_length) if o < duration]
+    onsets = [o for o in onsetmod.detect_onsets(env, sr_a, tempo_result.hop_length, y=mono_a) if o < duration]
 
     # §4.5 optional separation (analysis only)
     chord_source = mono_a
@@ -276,16 +282,15 @@ def analyze_decoded(
             beats, env, sr_a, tempo_result.hop_length, chroma=feats.weighted, frame_times=feats.times
         )
 
-    # §4.6 key
-    _report(progress, 0.68, "Estimating key")
-    not_silent = 1.0 - frames.posterior[chords.NO_CHORD] if frames.posterior.shape[1] else None
-    key_estimate, key_confidence, key_scores = keymod.estimate_key(feats, frame_weights=not_silent)
-
     frame_conf = frames.frame_confidence()
     chord_frames: list[tuple[str | None, str | None, float]] = []
     for s, c in zip(frames.states.tolist(), frame_conf.tolist(), strict=True):
         root, quality = chords.state_label(int(s))
         chord_frames.append((None if root is None else pc_name(root), quality, float(c)))
+
+    # §4.6 key
+    _report(progress, 0.68, "Estimating key")
+    key_estimate, key_confidence, key_scores = keymod.estimate_key(feats_mix, chord_frames=chord_frames)
 
     ctx = AnalysisContext(
         sample_rate=audio.sr,
