@@ -54,6 +54,13 @@ pnpm dev:ui        # just the UI in a browser on http://localhost:1420 (talks to
   a pre-release. Hotfixes branch from `main` as `hotfix/*`, PR into `main`,
   then PR `main → develop`. Rulesets enforcing this are in
   `.github/rulesets/`.
+- macOS dev builds are ad-hoc signed, not notarised (that needs the Apple
+  Developer ID secrets in CI). After downloading a DMG, macOS quarantines it;
+  either clear the flag before opening (`xattr -d com.apple.quarantine
+  ~/Downloads/Patine_*.dmg`) or, after copying the app to Applications, use
+  System Settings → Privacy & Security → "Open Anyway". If you see "Patine is
+  damaged", the build predates ad-hoc signing: `xattr -cr /Applications/Patine.app`
+  followed by `codesign --force --deep -s - /Applications/Patine.app` fixes it.
 - Versions: `pnpm version:bump 1.0.0` updates every file that declares the
   version (CI and the release workflow check they agree); commit that on
   `develop` before the release PR.
