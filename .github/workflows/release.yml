@@ -86,6 +86,9 @@ jobs:
             fi
           done
       - run: pnpm --filter @patine/desktop tauri build --config src-tauri/tauri.release.conf.json
+      - name: Smoke-test the bundled sidecar (launch, /health, /theory/parse)
+        shell: bash
+        run: node scripts/smoke-sidecar.mjs
       - name: Collect installers
         shell: bash
         run: |

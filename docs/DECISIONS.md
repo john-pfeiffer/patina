@@ -82,8 +82,18 @@ rejected: it makes the first launch depend on the network and on a working
 Python toolchain on the user's machine.
 
 Code signing and notarisation are not configured in CI (no certificates in
-the repository); the workflow produces unsigned dev artefacts named
+the repository); the workflow produces ad-hoc-signed dev artefacts named
 `Patine-dev-<sha7>-<OS>`.
+
+Two macOS facts learned the hard way: (1) Tauri signs the sidecar with the
+hardened runtime, which enforces library validation, so the PyInstaller
+bundle's Python framework (signed by another team) is refused at `dlopen`
+unless the app ships entitlements — `Entitlements.plist` grants
+`disable-library-validation`, `allow-unsigned-executable-memory` and
+`allow-jit` (numba) and is applied to every signed binary; (2) uv picks the
+newest managed CPython it can (a 3.15 beta on the CI runner) unless pinned,
+so `sidecar/.python-version` pins 3.13. CI now launches the bundled sidecar
+after `tauri build` and calls `/health` on all three platforms.
 
 ## Also decided while scaffolding
 
