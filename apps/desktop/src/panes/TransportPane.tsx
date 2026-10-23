@@ -122,6 +122,14 @@ export function TransportPane() {
         )}
         <span className={`badge ${connection.sse === 'open' ? 'badge-ok' : 'badge-busy'}`}>events {connection.sse}</span>
         {connection.error && <span className="warn">{connection.error}</span>}
+        <span
+          className={`badge ${transport.contextState === 'running' ? 'badge-ok' : 'badge-busy'}`}
+          title="Web Audio context state · sample rate · slot buffers decoded"
+        >
+          audio {transport.contextState ?? 'idle'}
+          {transport.sampleRate ? ` · ${Math.round(transport.sampleRate)} Hz` : ''}
+          {transport.totalSlots !== undefined ? ` · ${transport.loadedSlots ?? 0}/${transport.totalSlots} buffers` : ''}
+        </span>
         <span className="spacer" />
         <span className="readout" title="analysis queue">
           analyse {counts.analyzeRunning} running · {counts.analyzeQueued} queued

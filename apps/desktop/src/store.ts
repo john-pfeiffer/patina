@@ -44,6 +44,10 @@ export interface ConnectionState {
 export interface TransportState {
   playing: boolean;
   positionBeats: number;
+  contextState?: string;
+  sampleRate?: number;
+  loadedSlots?: number;
+  totalSlots?: number;
 }
 
 export interface UiState {

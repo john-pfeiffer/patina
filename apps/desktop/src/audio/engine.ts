@@ -53,6 +53,12 @@ export interface EngineProgram {
 export interface EngineTransport {
   playing: boolean;
   positionBeats: number;
+  /** Web Audio context state: 'running' is the only one that makes sound. */
+  contextState: string;
+  sampleRate: number;
+  /** Slots whose render buffer is decoded and ready to fire / slots in the program. */
+  loadedSlots: number;
+  totalSlots: number;
 }
 
 interface SlotNode {
@@ -232,6 +238,7 @@ export class PlaybackEngine {
         node.buffer = buffer;
         if (!node.override) node.player.buffer = buffer;
         this.release(old);
+        this.emit();
       })
       .catch((e: unknown) => this.onError(`render load failed: ${e instanceof Error ? e.message : String(e)}`));
   }
@@ -326,8 +333,22 @@ export class PlaybackEngine {
   }
 
   private emit(): void {
-    const t = { playing: this.playing, positionBeats: this.positionBeats };
+    const t = this.snapshot();
     for (const l of this.listeners) l(t);
+  }
+
+  snapshot(): EngineTransport {
+    const ctx = Tone.getContext();
+    let loaded = 0;
+    for (const n of this.slots.values()) if (n.player.loaded) loaded++;
+    return {
+      playing: this.playing,
+      positionBeats: this.positionBeats,
+      contextState: ctx.state,
+      sampleRate: ctx.sampleRate,
+      loadedSlots: loaded,
+      totalSlots: this.slots.size,
+    };
   }
 
   private startTicker(): void {
