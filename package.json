@@ -2,19 +2,21 @@
   "name": "patine",
   "private": true,
   "version": "0.1.0",
-  "description": "Patine — chord-sampling playground. Conform the recording, not the music.",
+  "description": "Patine \u2014 chord-sampling playground. Conform the recording, not the music.",
   "packageManager": "pnpm@10.28.0",
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "node scripts/dev.mjs",
-    "dev:sidecar": "uv run --project sidecar patine-sidecar --dev",
+    "dev:sidecar": "uv run --directory sidecar patine-sidecar --dev",
     "dev:ui": "pnpm --filter @patine/desktop dev:vite",
     "build": "node scripts/build-sidecar.mjs && pnpm --filter @patine/desktop build:app",
     "build:sidecar": "node scripts/build-sidecar.mjs",
     "test": "pnpm test:sidecar && pnpm test:desktop",
-    "test:sidecar": "uv run --project sidecar pytest -q",
+    "test:sidecar": "uv run --directory sidecar pytest -q",
     "test:desktop": "pnpm --filter @patine/desktop test",
-    "lint": "uv run --project sidecar ruff check sidecar/src sidecar/tests && pnpm --filter @patine/desktop typecheck",
-    "setup": "uv sync --project sidecar --all-extras --no-extra ml && pnpm install"
+    "lint": "uv run --directory sidecar ruff check src tests && pnpm --filter @patine/desktop typecheck",
+    "bootstrap": "uv sync --project sidecar --all-extras --no-extra ml && pnpm install"
   }
 }

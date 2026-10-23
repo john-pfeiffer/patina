@@ -22,7 +22,7 @@ and the Tauri platform prerequisites for your OS. ffmpeg on PATH extends the
 decodable formats.
 
 ```sh
-pnpm setup      # uv sync + pnpm install
+pnpm bootstrap  # uv sync + pnpm install
 pnpm dev        # desktop shell with UI hot reload; the shell runs the sidecar from source
 pnpm test       # sidecar pytest + UI vitest
 pnpm lint       # ruff + tsc
