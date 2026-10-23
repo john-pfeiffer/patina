@@ -70,6 +70,8 @@ export interface PatineState {
   currentProgressionId: string | null;
   /** Renders for the current progression, by slot id. */
   slotRenders: Record<string, RenderStatus>;
+  /** Last render that was ready per slot: what the engine keeps playing while a newer key renders. */
+  slotLastGood: Record<string, RenderStatus>;
   /** Renders for the current set's members at transpose 0, by region id. */
   memberRenders: Record<string, RenderStatus>;
   /** In-context preview renders, by cache key. */
@@ -89,7 +91,6 @@ export interface PatineState {
 
   loadAll: () => Promise<void>;
 
-  refreshSamples: () => Promise<void>;
   refreshSample: (id: string) => Promise<void>;
   refreshRegion: (id: string) => Promise<void>;
   ingest: (paths: string[]) => Promise<void>;
@@ -124,7 +125,6 @@ export interface PatineState {
   previewInContext: (region: Region, slotId: string) => Promise<void>;
   clearPendingAudition: () => void;
 
-  refreshJobs: () => Promise<void>;
   cancelJob: (id: string) => Promise<void>;
   startExport: (kind: ExportKind) => Promise<void>;
 
@@ -244,6 +244,31 @@ function replaceRegion(samples: readonly Sample[], region: Region): Sample[] {
   );
 }
 
+/** Remember the last ready render per slot so the UI can say "playing stale". */
+function rememberLastGood(prev: Record<string, RenderStatus>, renders: Record<string, RenderStatus>): Record<string, RenderStatus> {
+  let out = prev;
+  for (const [slotId, r] of Object.entries(renders)) {
+    if (r.status === 'ready' && r.url && out[slotId]?.cache_key !== r.cache_key) {
+      if (out === prev) out = { ...prev };
+      out[slotId] = r;
+    }
+  }
+  return out;
+}
+
+const MAX_JOBS = 200;
+
+/** Keep the job list bounded: drop the oldest finished jobs past MAX_JOBS. */
+function pruneJobs(jobs: Record<string, Job>): Record<string, Job> {
+  const all = Object.values(jobs);
+  if (all.length <= MAX_JOBS) return jobs;
+  const finished = all
+    .filter((j) => j.status !== 'queued' && j.status !== 'running')
+    .sort((a, b) => (a.updated_at < b.updated_at ? -1 : 1));
+  const drop = new Set(finished.slice(0, all.length - MAX_JOBS).map((j) => j.id));
+  return Object.fromEntries(all.filter((j) => !drop.has(j.id)).map((j) => [j.id, j]));
+}
+
 const prefs = loadPrefs();
 
 export const useStore = create<PatineState>()((set, get) => {
@@ -277,6 +302,7 @@ export const useStore = create<PatineState>()((set, get) => {
     progressions: [],
     currentProgressionId: prefs.currentProgressionId ?? null,
     slotRenders: {},
+    slotLastGood: {},
     memberRenders: {},
     previewRenders: {},
     pendingAudition: null,
@@ -313,11 +339,6 @@ export const useStore = create<PatineState>()((set, get) => {
       }),
 
     // --- library -------------------------------------------------------------------
-
-    refreshSamples: () =>
-      run(async () => {
-        set({ samples: await api.samples.list() });
-      }),
 
     refreshSample: (id) =>
       run(async () => {
@@ -379,17 +400,20 @@ export const useStore = create<PatineState>()((set, get) => {
       }),
 
     selectSet: async (id) => {
-      set({
-        currentSetId: id,
-        progressions: [],
-        currentProgressionId: id === get().currentSetId ? get().currentProgressionId : null,
-        slotRenders: {},
-        memberRenders: {},
-        deltas: {},
-        candidates: {},
-        ui: { ...get().ui, selectedSlotId: null },
-      });
-      persist();
+      if (id !== get().currentSetId) {
+        set((s) => ({
+          currentSetId: id,
+          progressions: [],
+          currentProgressionId: null,
+          slotRenders: {},
+          slotLastGood: {},
+          memberRenders: {},
+          deltas: {},
+          candidates: {},
+          ui: { ...s.ui, selectedSlotId: null },
+        }));
+        persist();
+      }
       if (!id) return;
       await Promise.all([get().refreshSet(id), get().refreshDeltas(), get().refreshMemberRenders(), get().refreshProgressions()]);
     },
@@ -473,8 +497,16 @@ export const useStore = create<PatineState>()((set, get) => {
       }),
 
     selectProgression: async (id) => {
-      set((s) => ({ currentProgressionId: id, slotRenders: {}, candidates: {}, ui: { ...s.ui, selectedSlotId: null } }));
-      persist();
+      if (id !== get().currentProgressionId) {
+        set((s) => ({
+          currentProgressionId: id,
+          slotRenders: {},
+          slotLastGood: {},
+          candidates: {},
+          ui: { ...s.ui, selectedSlotId: null },
+        }));
+        persist();
+      }
       if (id) await get().refreshSlotRenders();
     },
 
@@ -509,7 +541,7 @@ export const useStore = create<PatineState>()((set, get) => {
         const id = get().currentProgressionId;
         if (!id) return;
         const slotRenders = await api.progressions.renders(id);
-        if (get().currentProgressionId === id) set({ slotRenders });
+        if (get().currentProgressionId === id) set((s) => ({ slotRenders, slotLastGood: rememberLastGood(s.slotLastGood, slotRenders) }));
       }),
 
     patchSlot: (id, patch) =>
@@ -583,12 +615,6 @@ export const useStore = create<PatineState>()((set, get) => {
     clearPendingAudition: () => set({ pendingAudition: null }),
 
     // --- jobs & export -------------------------------------------------------------------
-
-    refreshJobs: () =>
-      run(async () => {
-        const jobs = await api.jobs.list();
-        set({ jobs: Object.fromEntries(jobs.map((j) => [j.id, j])) });
-      }),
 
     cancelJob: (id) =>
       run(async () => {
@@ -670,7 +696,10 @@ export const useStore = create<PatineState>()((set, get) => {
                 touched = true;
               }
             }
-            if (touched) next.slotRenders = slotRenders;
+            if (touched) {
+              next.slotRenders = slotRenders;
+              next.slotLastGood = rememberLastGood(s.slotLastGood, slotRenders);
+            }
             return next;
           });
           if (rs.set_id !== get().currentSetId) break;
@@ -691,7 +720,7 @@ export const useStore = create<PatineState>()((set, get) => {
         }
         case 'job.updated': {
           const job = data as SidecarEventMap['job.updated'];
-          set((s) => ({ jobs: { ...s.jobs, [job.id]: job } }));
+          set((s) => ({ jobs: pruneJobs({ ...s.jobs, [job.id]: job }) }));
           break;
         }
       }

@@ -36,18 +36,6 @@ export interface UserOverrides {
   bypass: Record<string, boolean>;
 }
 
-export const DEFAULT_USER_OVERRIDES: UserOverrides = {
-  keep_preroll: false,
-  nudge_ms: 0,
-  warp_markers: [],
-  warp_strength: null,
-  stretch_method: null,
-  allow_wobble: false,
-  tempo_multiplier: 1,
-  tempo_feel: 'quarter',
-  bypass: {},
-};
-
 export type ModuleName = 'tuning' | 'loudness' | 'tilt' | 'lowend' | 'noise' | 'width' | 'density' | 'space';
 export const MODULE_NAMES: readonly ModuleName[] = ['tuning', 'loudness', 'tilt', 'lowend', 'noise', 'width', 'density', 'space'];
 export const REGION_MODULES: readonly ModuleName[] = ['tuning', 'loudness', 'tilt', 'lowend', 'noise', 'width'];

@@ -10,6 +10,7 @@ import {
 import { Knob } from '../components/Knob';
 import { NumberField } from '../components/NumberField';
 import { samplesById, selectCurrentSet, sessionBpm, useStore } from '../store';
+import { chordSymbol } from '../util/chords';
 import { MemberRow } from './MemberRow';
 
 const AMOUNT_MODULES: ReadonlySet<ModuleName> = new Set<ModuleName>(['tilt', 'width', 'space']);
@@ -127,8 +128,8 @@ export function SetPane() {
                   {!set.anchor_region_id && <option value="">(none)</option>}
                   {set.members.map((m) => (
                     <option key={m.region.id} value={m.region.id}>
-                      {names.get(m.region.sample_id)?.name ?? m.region.sample_id} · {m.region.chord_root ?? '?'}
-                      {m.region.chord_quality === 'min' ? 'm' : ''}
+                      {names.get(m.region.sample_id)?.name ?? m.region.sample_id} ·{' '}
+                      {chordSymbol(m.region.chord_root, m.region.chord_quality, m.region.bass_note) ?? '?'}
                     </option>
                   ))}
                 </select>

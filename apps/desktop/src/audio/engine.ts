@@ -89,15 +89,18 @@ export function densityThresholdDb(referenceLufs: number | null): number {
 }
 
 export class PlaybackEngine {
-  private readonly transport = Tone.getTransport();
   private graph: Graph | null = null;
+  private densityRouted: boolean | null = null;
   private readonly slots = new Map<string, SlotNode>();
   private readonly buffers = new Map<string, Promise<Tone.ToneAudioBuffer>>();
-  private program: EngineProgram | null = null;
   private audition: Tone.Player | null = null;
   private readonly listeners = new Set<(t: EngineTransport) => void>();
   private ticker: ReturnType<typeof setInterval> | null = null;
   onError: (message: string) => void = () => undefined;
+
+  private get transport(): ReturnType<typeof Tone.getTransport> {
+    return Tone.getTransport();
+  }
 
   // --- graph --------------------------------------------------------------------
 
@@ -118,12 +121,15 @@ export class PlaybackEngine {
     return this.graph;
   }
 
+  /** Bypass is a re-route, not a wet/dry mix; only touched when the toggle changes. */
   private routeDensity(density: DensitySetting): void {
     const g = this.ensureGraph();
+    g.comp.threshold.value = densityThresholdDb(density.referenceLufs);
+    if (this.densityRouted === density.enabled) return;
+    this.densityRouted = density.enabled;
     const out = Tone.getDestination();
     g.busIn.disconnect();
     g.comp.disconnect();
-    g.comp.threshold.value = densityThresholdDb(density.referenceLufs);
     if (density.enabled) {
       g.busIn.connect(g.comp);
       g.comp.connect(out);
@@ -132,18 +138,36 @@ export class PlaybackEngine {
     }
   }
 
+  private makePlayer(gain: Tone.Gain): Tone.Player {
+    return new Tone.Player({ fadeIn: DECLICK_S, fadeOut: DECLICK_S }).connect(gain);
+  }
+
+  /** A Player cannot be emptied (`buffer =` ignores an unloaded buffer), so
+   * "no buffer" means a fresh Player. Disposing the old one is the hard cut. */
+  private replacePlayer(node: SlotNode): void {
+    node.player.dispose();
+    node.player = this.makePlayer(node.gain);
+  }
+
   private node(slotId: string): SlotNode {
     const existing = this.slots.get(slotId);
     if (existing) return existing;
     const g = this.ensureGraph();
-    const player = new Tone.Player({ fadeIn: DECLICK_S, fadeOut: DECLICK_S });
     const gain = new Tone.Gain(1);
     const send = new Tone.Gain(0);
-    player.connect(gain);
     gain.connect(g.busIn);
     gain.connect(send);
     send.connect(g.reverb);
-    const node: SlotNode = { player, gain, send, regionId: null, path: null, buffer: null, override: null, loadSeq: 0 };
+    const node: SlotNode = {
+      player: this.makePlayer(gain),
+      gain,
+      send,
+      regionId: null,
+      path: null,
+      buffer: null,
+      override: null,
+      loadSeq: 0,
+    };
     this.slots.set(slotId, node);
     return node;
   }
@@ -195,7 +219,7 @@ export class PlaybackEngine {
       node.path = null;
       node.buffer = null;
       node.loadSeq++;
-      if (!node.override) node.player.buffer = new Tone.ToneAudioBuffer();
+      if (!node.override) this.replacePlayer(node);
       this.release(old);
     }
     if (!slot.renderPath || node.path === slot.renderPath) return;
@@ -249,7 +273,6 @@ export class PlaybackEngine {
 
   /** Apply a program. Cheap when nothing changed; reschedules otherwise. */
   sync(program: EngineProgram | null): void {
-    this.program = program;
     if (!program) {
       this.transport.cancel(0);
       for (const id of [...this.slots.keys()]) this.disposeNode(id);
@@ -284,6 +307,7 @@ export class PlaybackEngine {
       node.player.stop();
       this.clearOverride(node);
     }
+    this.stopAudition();
     this.stopTicker();
     this.emit();
   }
@@ -294,14 +318,6 @@ export class PlaybackEngine {
 
   get positionBeats(): number {
     return this.transport.ticks / this.transport.PPQ;
-  }
-
-  get bpm(): number {
-    return this.transport.bpm.value;
-  }
-
-  setBpm(bpm: number): void {
-    this.transport.bpm.value = bpm;
   }
 
   subscribe(listener: (t: EngineTransport) => void): () => void {
@@ -336,14 +352,17 @@ export class PlaybackEngine {
     player.buffer = buffer;
     player.onstop = () => {
       if (this.audition === player) this.audition = null;
-      player.dispose();
-      buffer.dispose();
+      // Tone still touches the source after onstop; dispose on the next tick.
+      setTimeout(() => {
+        player.dispose();
+        buffer.dispose();
+      }, 0);
     };
     this.audition = player;
     player.start();
   }
 
-  stopAudition(): void {
+  private stopAudition(): void {
     const p = this.audition;
     this.audition = null;
     p?.stop();
@@ -368,11 +387,8 @@ export class PlaybackEngine {
     if (!node.override) return;
     node.override.dispose();
     node.override = null;
-    node.player.buffer = node.buffer ?? new Tone.ToneAudioBuffer();
-  }
-
-  get currentProgram(): EngineProgram | null {
-    return this.program;
+    if (node.buffer) node.player.buffer = node.buffer;
+    else this.replacePlayer(node);
   }
 }
 

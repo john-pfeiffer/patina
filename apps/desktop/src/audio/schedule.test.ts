@@ -6,7 +6,6 @@ import {
   formatPosition,
   progressionEvents,
   resizeSteps,
-  secondsToBeats,
   slotEvents,
   slotStarts,
   stepAt,
@@ -26,7 +25,6 @@ describe('tempo conversions', () => {
   it('converts beats to seconds at the session bpm', () => {
     expect(beatsToSeconds(4, 120)).toBe(2);
     expect(beatsToSeconds(1, 60)).toBe(1);
-    expect(secondsToBeats(2, 120)).toBe(4);
   });
   it('rounds ticks at the transport PPQ', () => {
     expect(beatsToTicks(1.5, 192)).toBe(288);

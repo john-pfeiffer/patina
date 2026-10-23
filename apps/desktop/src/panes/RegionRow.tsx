@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api/client';
-import type { Region, Slot } from '../api/types';
+import { TILT_BAND_CENTRES_HZ, type Region, type Slot } from '../api/types';
 import { engine } from '../audio/engine';
 import { Sparkline } from '../components/Sparkline';
 import { useStore } from '../store';
@@ -87,7 +87,12 @@ export function RegionRow({ region, isMember, hasSet, selectedSlot }: RegionRowP
         </span>
         <span title="sub ratio">sub {pct(m?.sub_ratio)}</span>
         <span className="spark" title="tilt: 10 octave bands 31.5 Hz–16 kHz (dB)">
-          tilt {m ? <Sparkline values={m.tilt_bands} title={m.tilt_bands.map((v) => db(v, 0)).join(' ')} /> : '—'}
+          tilt{' '}
+          {m ? (
+            <Sparkline values={m.tilt_bands} title={m.tilt_bands.map((v, i) => `${TILT_BAND_CENTRES_HZ[i] ?? '?'}:${db(v, 0)}`).join(' ')} />
+          ) : (
+            '—'
+          )}
         </span>
       </div>
       {editing && <RegionEdit region={region} />}

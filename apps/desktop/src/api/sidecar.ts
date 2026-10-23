@@ -9,8 +9,6 @@ import { isTauri, onSidecarReady, sidecarInfo } from './shell';
 export const DEV_CONNECTION: SidecarConnection = { url: 'http://127.0.0.1:47621', token: 'dev' };
 export const POLL_INTERVAL_MS = 500;
 
-export type DiscoveryPhase = 'starting' | 'found';
-
 export interface DiscoveryHandlers {
   onFound: (conn: SidecarConnection) => void;
   onError?: (message: string) => void;

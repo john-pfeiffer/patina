@@ -33,10 +33,6 @@ export function beatsToSeconds(beats: number, bpm: number): number {
   return (beats * 60) / bpm;
 }
 
-export function secondsToBeats(seconds: number, bpm: number): number {
-  return (seconds * bpm) / 60;
-}
-
 export function beatsToTicks(beats: number, ppq: number): number {
   return Math.round(beats * ppq);
 }

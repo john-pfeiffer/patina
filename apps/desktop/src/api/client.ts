@@ -7,6 +7,7 @@ import type {
   ConformSet,
   CsvImportRequest,
   ExportRequest,
+  IngestRequest,
   IngestResponse,
   Job,
   JobStatus,
@@ -54,10 +55,6 @@ let connection: SidecarConnection | null = null;
 
 export function setConnection(conn: SidecarConnection | null): void {
   connection = conn;
-}
-
-export function getConnection(): SidecarConnection | null {
-  return connection;
 }
 
 function requireConnection(): SidecarConnection {
@@ -125,7 +122,7 @@ export const api = {
   health: () => request<SidecarInfo>('GET', '/health'),
 
   samples: {
-    ingest: (paths: string[]) => request<IngestResponse>('POST', '/samples', { paths }),
+    ingest: (paths: string[]) => request<IngestResponse>('POST', '/samples', { paths } satisfies IngestRequest),
     list: () => request<Sample[]>('GET', '/samples'),
     get: (id: string) => request<Sample>('GET', `/samples/${id}`),
     remove: (id: string) => request<void>('DELETE', `/samples/${id}`),
@@ -189,5 +186,3 @@ export const api = {
     cancel: (id: string) => request<Job>('POST', `/jobs/${id}/cancel`),
   },
 };
-
-export type Api = typeof api;

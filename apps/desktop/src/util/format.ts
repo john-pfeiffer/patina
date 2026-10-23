@@ -33,12 +33,6 @@ export function ratio(v: number | null | undefined, digits = 2): string {
   return v === null || v === undefined ? '—' : `×${v.toFixed(digits)}`;
 }
 
-/** Longest-common-prefix-free file name from a path. */
-export function baseName(path: string): string {
-  const i = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-  return i >= 0 ? path.slice(i + 1) : path;
-}
-
 export function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
