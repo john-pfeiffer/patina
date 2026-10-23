@@ -86,6 +86,7 @@ export function TransportPane() {
     .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
     .slice(0, MAX_JOBS_SHOWN);
   const canPlay = progression !== null && progression.slots.length > 0;
+  const assignedSlots = progression?.slots.filter((sl) => sl.region_id).length ?? 0;
 
   return (
     <section className="pane pane-transport">
@@ -122,6 +123,11 @@ export function TransportPane() {
         )}
         <span className={`badge ${connection.sse === 'open' ? 'badge-ok' : 'badge-busy'}`}>events {connection.sse}</span>
         {connection.error && <span className="warn">{connection.error}</span>}
+        {canPlay && assignedSlots === 0 && (
+          <span className="warn" title="Set members are conformed, but only regions assigned to slots play and export">
+            no slot has a region: select a slot and assign a candidate, press Reroll, or use a region's “assign”
+          </span>
+        )}
         <span
           className={`badge ${transport.contextState === 'running' ? 'badge-ok' : 'badge-busy'}`}
           title="Web Audio context state · sample rate · slot buffers decoded"
