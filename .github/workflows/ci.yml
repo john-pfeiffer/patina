@@ -83,9 +83,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: node scripts/build-sidecar.mjs
       # Signing/notarisation: add the repository secrets below and Tauri signs
-      # automatically (https://tauri.app/distribute/sign/). Until then the
-      # artefacts are unsigned dev builds.
-      - run: pnpm --filter @patine/desktop tauri build --config src-tauri/tauri.release.conf.json
+      # automatically (https://tauri.app/distribute/sign/). The variables are
+      # exported only when the secret is set: Tauri treats an empty
+      # APPLE_CERTIFICATE as "sign with this" and fails the bundle.
+      - name: Export signing secrets when configured
+        shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -95,6 +97,19 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            value="${!name}"
+            if [ -n "$value" ]; then
+              {
+                echo "$name<<PATINE_EOF"
+                echo "$value"
+                echo "PATINE_EOF"
+              } >> "$GITHUB_ENV"
+              echo "exported $name"
+            fi
+          done
+      - run: pnpm --filter @patine/desktop tauri build --config src-tauri/tauri.release.conf.json
       - name: Short SHA
         id: sha
         shell: bash
