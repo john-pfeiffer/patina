@@ -140,8 +140,14 @@ def render_slot(
         return out
     pat: Pattern = slot.pattern
     if pat.mode == "hold":
-        m = min(n, render.shape[1])
-        out[:, :m] = declick(render[:, :m], sr, declick_ms)
+        # Hold fills the slot: a region shorter than the slot restarts from its
+        # snap point (hard cut) until the slot ends, never trailing silence.
+        pos = 0
+        total = render.shape[1]
+        while pos < n:
+            m = min(total, n - pos)
+            out[:, pos:pos + m] = declick(render[:, :m], sr, declick_ms)
+            pos += m
         return out
 
     step_beats = DIVISION_BEATS.get(pat.division, 0.5)

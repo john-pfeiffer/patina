@@ -252,10 +252,26 @@ export class PlaybackEngine {
     const bufferDuration = node.player.buffer.duration;
     const offset = beatsToSeconds(event.offsetBeats, bpm);
     if (offset >= bufferDuration) return;
-    const duration = Math.min(beatsToSeconds(event.durationBeats, bpm), bufferDuration - offset);
-    if (duration <= 0) return;
+    const wanted = beatsToSeconds(event.durationBeats, bpm);
     node.gain.gain.setValueAtTime(event.velocity, time);
-    node.player.start(time, offset, duration);
+    if (event.stepIndex !== -1) {
+      const duration = Math.min(wanted, bufferDuration - offset);
+      if (duration > 0) node.player.start(time, offset, duration);
+      return;
+    }
+    // Hold fills the slot: a region shorter than the slot restarts from its
+    // snap point (hard cut) until the slot ends, never trailing silence.
+    let at = time;
+    let remaining = wanted;
+    let from = offset;
+    while (remaining > 0.001) {
+      const len = Math.min(bufferDuration - from, remaining);
+      if (len <= 0) break;
+      node.player.start(at, from, len);
+      at += len;
+      remaining -= len;
+      from = 0;
+    }
   }
 
   private schedule(program: EngineProgram): void {

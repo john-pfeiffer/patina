@@ -116,6 +116,16 @@ after `tauri build` and calls `/health` on all three platforms.
   playback starts (first onset unless Keep pre-roll); retrigger restarts there
   and kit beat markers count from it. Nudge moves the play start without
   moving the grid.
+- **Hold fills the slot.** The handoff says hold "plays through for the slot's
+  length"; a region shorter than the slot restarts from its snap point (hard
+  cut, declicked) until the slot ends rather than trailing silence, and a
+  longer one is cut at the slot end. Time-stretching a region to the slot
+  length is the other reading; it can be added as a per-slot `fit` choice.
+- **Region boundaries snap to the beat grid.** Chord-change boundaries from
+  the frame-wise estimator land within a frame or two of the true change;
+  they now move onto a tracked beat when one is within about a third of a
+  beat period (onsets otherwise), so a region's beat 0 is a beat of the
+  source and it plays in phase with the progression's grid.
 - **Typing a session bpm pins it**; otherwise session tempo follows the anchor.
 - **Inversions are tracked, shown, never matched** (§10) — `bass_note` is on
   every region and slot but strictness ignores it.
