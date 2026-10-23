@@ -69,8 +69,11 @@ the anchor has no quiet stretch. The module never subtracts.
 **Recommendation: PyInstaller one-file bundle as a Tauri `externalBin`,
 without torch.** The spec (`sidecar/patine-sidecar.spec`) collects librosa,
 scipy, numba/llvmlite, soxr, python-stretch, pyloudnorm and excludes
-torch/demucs/beat_this/onnxruntime. Expected size: 120–180 MB per platform
-(numpy + scipy + numba dominate), which keeps the installer sane. Model-backed
+torch/demucs/beat_this/onnxruntime. Measured on Linux x86_64 with the
+current dependency set: a 169 MB one-file executable that answers `/health`
+about 4 s after launch (one-file bundles unpack to a temp dir on start; the
+one-dir form would start faster at the cost of a messier bundle). numpy,
+scipy and numba dominate the size; it keeps the installer sane. Model-backed
 features (ONNX chord model, `beat_this`, demucs) install their runtime into
 `<data dir>` on first use via a bootstrap step, so the base installer never
 carries torch. Model loading stays fast because weights live on local disk
