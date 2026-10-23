@@ -161,6 +161,10 @@ class Database:
         self._local = threading.local()
         self._init_lock = threading.Lock()
         self._initialised = False
+        # Every open connection, whichever thread owns it, so shutdown can
+        # close them all: Windows refuses to delete a database file that any
+        # thread (worker, request threadpool) still has open.
+        self._all: set[sqlite3.Connection] = set()
 
     def connect(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -172,6 +176,8 @@ class Database:
                 conn.execute("PRAGMA journal_mode = WAL")
                 conn.execute("PRAGMA synchronous = NORMAL")
             self._local.conn = conn
+            with self._init_lock:
+                self._all.add(conn)
         if not self._initialised:
             with self._init_lock:
                 if not self._initialised:
@@ -198,10 +204,28 @@ class Database:
             raise
 
     def close(self) -> None:
+        """Close this thread's connection."""
         conn = getattr(self._local, "conn", None)
         if conn is not None:
-            conn.close()
+            self._close_conn(conn)
             self._local.conn = None
+
+    def close_all(self) -> None:
+        """Close every connection from every thread. Only for shutdown, when
+        no thread is still using the database."""
+        with self._init_lock:
+            conns = list(self._all)
+        for conn in conns:
+            self._close_conn(conn)
+        self._local.conn = None
+
+    def _close_conn(self, conn: sqlite3.Connection) -> None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        with self._init_lock:
+            self._all.discard(conn)
 
     # Small helpers -----------------------------------------------------------
 

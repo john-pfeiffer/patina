@@ -43,7 +43,7 @@ class AppState:
 
     def close(self) -> None:
         self.worker.stop()
-        self.db.close()
+        self.db.close_all()
 
     def ml_available(self) -> bool:
         try:
