@@ -162,7 +162,7 @@ def _resolve_chord(
                 return None, chord_quality, None, 0.0
             return None, None, None, 0.0
         root_pc, base_quality, posterior = dom
-    quality, bass, conf, _fit = chords.label_segment(
+    root_pc, quality, bass, conf, _fit = chords.label_segment(
         feats, 0, feats.n_frames, root_pc, base_quality,
         posterior=posterior, quality_override=chord_quality,
     )

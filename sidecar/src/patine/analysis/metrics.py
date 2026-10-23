@@ -190,8 +190,9 @@ def bass_mono_hz(spectra: Spectra, sr: int, *, threshold: float = 0.9, f_min: fl
     """Highest frequency below which the L/R correlation stays above
     `threshold`. The correlation is energy-weighted over everything below the
     candidate frequency, so empty gaps between harmonics (where only the
-    noise floor lives) cannot read as decorrelated bass. Nyquist for mono or
-    fully correlated input; None for silence."""
+    noise floor lives) cannot read as decorrelated bass, and nothing counts
+    until 0.1 % of the energy has accumulated. Nyquist for mono or fully
+    correlated input; None for silence."""
     nyquist = float(sr) / 2.0
     if not spectra.stereo:
         return nyquist
@@ -208,7 +209,7 @@ def bass_mono_hz(spectra: Spectra, sr: int, *, threshold: float = 0.9, f_min: fl
         return None
     corr = pxy / np.sqrt(pxx * pyy + _EPS)
     level = (pxx + pyy) / total
-    bad = np.where((corr < threshold) & (level > 1e-6))[0]
+    bad = np.where((corr < threshold) & (level > 1e-3))[0]
     if bad.size == 0:
         return nyquist
     return float(f[sel][bad[0]])

@@ -413,8 +413,9 @@ def label_segment(
     *,
     posterior: float = 1.0,
     quality_override: str | None = None,
-) -> tuple[str, int, float, float]:
-    """(quality, bass, confidence, fit) for frames [f0, f1) given a root."""
+) -> tuple[int, str, int, float, float]:
+    """(root, quality, bass, confidence, fit) for frames [f0, f1) given a root
+    hypothesis; the root only changes for the sus2/sus4 enharmonic swap."""
     seg = feats.slice_frames(f0, f1)
     mean = seg.mean_weighted()
     if quality_override is not None:
@@ -424,7 +425,19 @@ def label_segment(
         quality, _ = refine_quality(mean, root, base_quality)
         fit, margin = chord_fit_scores(mean, root, quality)
     bass = estimate_bass(seg.mean_bass(), root, quality)
-    return quality, bass, chord_confidence(fit, margin, posterior), fit
+    if quality_override is None:
+        root, quality = normalise_sus(root, quality, bass)
+    return root, quality, bass, chord_confidence(fit, margin, posterior), fit
+
+
+def normalise_sus(root: int, quality: str, bass: int) -> tuple[int, str]:
+    """Csus2/G and Gsus4 are the same pitch classes; name a sus chord from
+    its bass note when the bass is the fifth (sus2) or the fourth (sus4)."""
+    if quality == "sus2" and bass == (root + 7) % 12:
+        return bass, "sus4"
+    if quality == "sus4" and bass == (root + 5) % 12:
+        return bass, "sus2"
+    return root, quality
 
 
 def quality_similarities(feats: ChromaFeatures, root: int, qualities: tuple[str, ...] = ANALYSIS_QUALITIES) -> np.ndarray:
@@ -555,10 +568,10 @@ def segment_chords(
         if e <= s:
             continue
         post = float(conf_frames[a:b].mean()) if b > a else 0.0
-        final_quality, bass, conf, fit = label_segment(feats, a, b, root, quality, posterior=post)
+        final_root, final_quality, bass, conf, fit = label_segment(feats, a, b, root, quality, posterior=post)
         segments.append(ChordSegment(
             start_s=float(s), end_s=float(e), frame_start=a, frame_end=b,
-            root=root, quality=final_quality, bass=bass, confidence=conf, fit=fit,
+            root=final_root, quality=final_quality, bass=bass, confidence=conf, fit=fit,
         ))
     return segments
 
