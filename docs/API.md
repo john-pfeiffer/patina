@@ -71,7 +71,7 @@ SSE events (`event:` name, `data:` JSON):
 | PATCH | `/progressions/{id}` | `ProgressionPatch` → `Progression`. `text` replaces the slots, keeping region assignments on slots whose chord did not change. |
 | DELETE | `/progressions/{id}` | → 204 |
 | GET | `/progressions/{id}/renders` | → `{slot_id: RenderStatus}` for every assigned slot at that slot's transposition; missing renders are queued |
-| PATCH | `/slots/{id}` | `SlotPatch` → `Slot` |
+| PATCH | `/slots/{id}` | `SlotPatch` → `Slot`. Assigning a `region_id` also adds that region to the progression's set (first member becomes the anchor), so the member list is always every region in use. |
 | GET | `/slots/{id}/candidates?strictness=exact\|function\|two_tones&limit=50` | → `Candidate[]` ranked by §5.2 score; substitutions rank before transpositions |
 | POST | `/progressions/{id}/reroll` | `RerollRequest {amount, strictness, seed?}` → `Progression` (§5.5: unlocked slots only) |
 | POST | `/progressions/import-csv` | `CsvImportRequest {set_id, csv_text}` → `Progression[]`; columns `chords, roman, key, bpm` (header row required, any order) |

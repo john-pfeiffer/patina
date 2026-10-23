@@ -68,6 +68,9 @@ def test_full_flow(app_client, tmp_data_dir):
                                                           "transpose_semitones": cs[0]["transpose_semitones"]})
     p = app_client.get(f"/progressions/{p['id']}").json()
     assert sum(1 for s in p["slots"] if s["region_id"]) >= 2
+    # Every region that plays in a slot is a member of the set.
+    member_ids = {m["region"]["id"] for m in app_client.get(f"/sets/{st['id']}").json()["members"]}
+    assert all(s["region_id"] in member_ids for s in p["slots"] if s["region_id"])
 
     # Renders: queued on first ask, ready after the worker runs.
     def ready():
