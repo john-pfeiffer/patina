@@ -204,9 +204,9 @@ def _render_run(
         if abs(transpose) < 1e-9:
             return _window(res, run_at - lead, want)
         # pitch followed tempo for the stretch; the transposition is elastic on top
-        return _engine_pass(res, sr, run_at, run_at + out_len, 1.0, transpose, lead, trail)
+        return _engine_pass(res, sr, run_at, run_at + out_len, out_len, 1.0, transpose, lead, trail)
 
-    return _engine_pass(y, sr, a, b, ratio, transpose, lead, trail)
+    return _engine_pass(y, sr, a, b, out_len, ratio, transpose, lead, trail)
 
 
 def _engine_pass(
@@ -214,6 +214,7 @@ def _engine_pass(
     sr: int,
     a: int,
     b: int,
+    out_len: int,
     ratio: float,
     transpose: float,
     lead: int,
@@ -221,8 +222,8 @@ def _engine_pass(
 ) -> np.ndarray:
     """Run Signalsmith Stretch over src[a:b] padded with real neighbouring
     audio (zeros beyond the buffer) at dst/src `ratio` with `transpose`
-    semitones. Returns lead + round((b - a) · ratio) + trail output samples
-    starting `lead` samples before the stretched src[a]."""
+    semitones. Returns lead + out_len + trail output samples starting `lead`
+    samples before the stretched src[a]."""
     import python_stretch as ps
 
     engine = ps.Signalsmith.Stretch()
@@ -234,8 +235,7 @@ def _engine_pass(
         engine.setTransposeSemitones(float(transpose))
     processed = engine.process(np.ascontiguousarray(padded, dtype=np.float32))
     run_at = int(round(ctx * ratio))
-    want = lead + int(round((b - a) * ratio)) + trail
-    return _window(processed, run_at - lead, want)
+    return _window(processed, run_at - lead, lead + out_len + trail)
 
 
 def _window(x: np.ndarray, start: int, n: int) -> np.ndarray:
