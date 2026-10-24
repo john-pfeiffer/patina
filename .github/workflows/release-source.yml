@@ -3,21 +3,30 @@ name: Release source
 # Pull requests into main may only come from develop (a release) or a
 # hotfix/* branch. The main ruleset requires this check, which is how the
 # feature → develop → main path is enforced; GitHub rulesets cannot
-# restrict a PR's source branch on their own.
+# restrict a PR's source branch on their own. It also runs for PRs into
+# develop (always passing) and on base-branch edits, so retargeting a PR
+# from main to develop turns the check green instead of leaving a stale
+# failure on the commit.
 on:
   pull_request:
-    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+    branches: [main, develop]
 
 jobs:
   release-source:
     name: Release source
     runs-on: ubuntu-latest
     steps:
-      - name: Source branch must be develop or hotfix/*
+      - name: Check source against base
         env:
+          BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
         run: |
+          if [ "$BASE_REF" != "main" ]; then
+            echo "ok: PR into $BASE_REF from $HEAD_REF (only main restricts its sources)"
+            exit 0
+          fi
           case "$HEAD_REF" in
-            develop|hotfix/*) echo "ok: $HEAD_REF" ;;
-            *) echo "::error::Pull requests into main must come from develop or hotfix/*, not '$HEAD_REF'"; exit 1 ;;
+            develop|hotfix/*) echo "ok: release/hotfix into main from $HEAD_REF" ;;
+            *) echo "::error::Pull requests into main must come from develop or hotfix/*, not '$HEAD_REF'. Retarget this PR at develop."; exit 1 ;;
           esac
