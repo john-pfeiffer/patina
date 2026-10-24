@@ -238,15 +238,22 @@ export class PlaybackEngine {
         node.buffer = buffer;
         if (!node.override) node.player.buffer = buffer;
         this.release(old);
+        console.info('[engine] buffer loaded', { slot: slot.id, path: slot.renderPath, seconds: buffer.duration.toFixed(3), loaded: node.player.loaded });
         this.emit();
       })
-      .catch((e: unknown) => this.onError(`render load failed: ${e instanceof Error ? e.message : String(e)}`));
+      .catch((e: unknown) => {
+        console.error('[engine] buffer load failed', { slot: slot.id, path: slot.renderPath, error: e });
+        this.onError(`render load failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
   }
 
   // --- scheduling -------------------------------------------------------------------
 
   private fire(node: SlotNode, event: StepEvent, time: number): void {
-    if (!node.player.loaded) return;
+    if (!node.player.loaded) {
+      console.warn('[engine] trigger skipped: buffer not loaded', { region: node.regionId, path: node.path, startBeats: event.startBeats });
+      return;
+    }
     if (!stepFires(event, Math.random())) return;
     const bpm = this.transport.bpm.value;
     const bufferDuration = node.player.buffer.duration;
@@ -286,12 +293,22 @@ export class PlaybackEngine {
     t.loopStart = 0;
     t.loopEnd = `${beatsToTicks(total, ppq)}i`;
     t.loop = program.loop;
+    let scheduled = 0;
     for (const { slotId, event } of progressionEvents(program.slots)) {
       const node = this.slots.get(slotId);
       if (!node) continue;
       t.schedule((time) => this.fire(node, event, time), `${beatsToTicks(event.startBeats, ppq)}i`);
+      scheduled++;
     }
     if (!program.loop) t.schedule(() => this.stop(), `${beatsToTicks(total, ppq)}i`);
+    console.info('[engine] scheduled', {
+      events: scheduled,
+      totalBeats: total,
+      bpm: t.bpm.value,
+      loop: program.loop,
+      slotsWithRender: program.slots.filter((s) => s.renderPath).length,
+      slots: program.slots.length,
+    });
   }
 
   /** Apply a program. Cheap when nothing changed; reschedules otherwise. */
@@ -319,6 +336,7 @@ export class PlaybackEngine {
     await Tone.start();
     this.ensureGraph();
     if (this.transport.state === 'started') return;
+    console.info('[engine] play', { context: Tone.getContext().state, ...this.snapshot() });
     this.transport.start();
     this.startTicker();
   }
