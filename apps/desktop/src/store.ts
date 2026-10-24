@@ -44,6 +44,10 @@ export interface ConnectionState {
 export interface TransportState {
   playing: boolean;
   positionBeats: number;
+  contextState?: string;
+  sampleRate?: number;
+  loadedSlots?: number;
+  totalSlots?: number;
 }
 
 export interface UiState {
@@ -581,8 +585,19 @@ export const useStore = create<PatineState>()((set, get) => {
         const id = get().currentProgressionId;
         if (!id) return;
         const { rerollAmount, strictness } = get().ui;
+        const before = get().progressions.find((p) => p.id === id);
         const updated = await api.progressions.reroll(id, { amount: rerollAmount, strictness });
         set((s) => ({ progressions: replaceById(s.progressions, updated) }));
+        const changed = updated.slots.some((sl, i) => sl.region_id !== before?.slots[i]?.region_id);
+        if (!changed) {
+          const unassigned = updated.slots.filter((sl) => !sl.region_id && !sl.locked).length;
+          set({
+            lastError:
+              unassigned > 0
+                ? `reroll changed nothing: no candidates at “${strictness}” strictness for ${unassigned} unlocked slot(s) — loosen the strictness knob (shares two tones) or assign from the library`
+                : 'reroll changed nothing (all slots locked, or amount too low)',
+          });
+        }
         await get().refreshSlotRenders();
       }),
 

@@ -53,6 +53,12 @@ export interface EngineProgram {
 export interface EngineTransport {
   playing: boolean;
   positionBeats: number;
+  /** Web Audio context state: 'running' is the only one that makes sound. */
+  contextState: string;
+  sampleRate: number;
+  /** Slots whose render buffer is decoded and ready to fire / slots in the program. */
+  loadedSlots: number;
+  totalSlots: number;
 }
 
 interface SlotNode {
@@ -232,23 +238,47 @@ export class PlaybackEngine {
         node.buffer = buffer;
         if (!node.override) node.player.buffer = buffer;
         this.release(old);
+        console.info('[engine] buffer loaded', { slot: slot.id, path: slot.renderPath, seconds: buffer.duration.toFixed(3), loaded: node.player.loaded });
+        this.emit();
       })
-      .catch((e: unknown) => this.onError(`render load failed: ${e instanceof Error ? e.message : String(e)}`));
+      .catch((e: unknown) => {
+        console.error('[engine] buffer load failed', { slot: slot.id, path: slot.renderPath, error: e });
+        this.onError(`render load failed: ${e instanceof Error ? e.message : String(e)}`);
+      });
   }
 
   // --- scheduling -------------------------------------------------------------------
 
   private fire(node: SlotNode, event: StepEvent, time: number): void {
-    if (!node.player.loaded) return;
+    if (!node.player.loaded) {
+      console.warn('[engine] trigger skipped: buffer not loaded', { region: node.regionId, path: node.path, startBeats: event.startBeats });
+      return;
+    }
     if (!stepFires(event, Math.random())) return;
     const bpm = this.transport.bpm.value;
     const bufferDuration = node.player.buffer.duration;
     const offset = beatsToSeconds(event.offsetBeats, bpm);
     if (offset >= bufferDuration) return;
-    const duration = Math.min(beatsToSeconds(event.durationBeats, bpm), bufferDuration - offset);
-    if (duration <= 0) return;
+    const wanted = beatsToSeconds(event.durationBeats, bpm);
     node.gain.gain.setValueAtTime(event.velocity, time);
-    node.player.start(time, offset, duration);
+    if (event.stepIndex !== -1) {
+      const duration = Math.min(wanted, bufferDuration - offset);
+      if (duration > 0) node.player.start(time, offset, duration);
+      return;
+    }
+    // Hold fills the slot: a region shorter than the slot restarts from its
+    // snap point (hard cut) until the slot ends, never trailing silence.
+    let at = time;
+    let remaining = wanted;
+    let from = offset;
+    while (remaining > 0.001) {
+      const len = Math.min(bufferDuration - from, remaining);
+      if (len <= 0) break;
+      node.player.start(at, from, len);
+      at += len;
+      remaining -= len;
+      from = 0;
+    }
   }
 
   private schedule(program: EngineProgram): void {
@@ -263,12 +293,22 @@ export class PlaybackEngine {
     t.loopStart = 0;
     t.loopEnd = `${beatsToTicks(total, ppq)}i`;
     t.loop = program.loop;
+    let scheduled = 0;
     for (const { slotId, event } of progressionEvents(program.slots)) {
       const node = this.slots.get(slotId);
       if (!node) continue;
       t.schedule((time) => this.fire(node, event, time), `${beatsToTicks(event.startBeats, ppq)}i`);
+      scheduled++;
     }
     if (!program.loop) t.schedule(() => this.stop(), `${beatsToTicks(total, ppq)}i`);
+    console.info('[engine] scheduled', {
+      events: scheduled,
+      totalBeats: total,
+      bpm: t.bpm.value,
+      loop: program.loop,
+      slotsWithRender: program.slots.filter((s) => s.renderPath).length,
+      slots: program.slots.length,
+    });
   }
 
   /** Apply a program. Cheap when nothing changed; reschedules otherwise. */
@@ -296,6 +336,7 @@ export class PlaybackEngine {
     await Tone.start();
     this.ensureGraph();
     if (this.transport.state === 'started') return;
+    console.info('[engine] play', { context: Tone.getContext().state, ...this.snapshot() });
     this.transport.start();
     this.startTicker();
   }
@@ -326,8 +367,22 @@ export class PlaybackEngine {
   }
 
   private emit(): void {
-    const t = { playing: this.playing, positionBeats: this.positionBeats };
+    const t = this.snapshot();
     for (const l of this.listeners) l(t);
+  }
+
+  snapshot(): EngineTransport {
+    const ctx = Tone.getContext();
+    let loaded = 0;
+    for (const n of this.slots.values()) if (n.player.loaded) loaded++;
+    return {
+      playing: this.playing,
+      positionBeats: this.positionBeats,
+      contextState: ctx.state,
+      sampleRate: ctx.sampleRate,
+      loadedSlots: loaded,
+      totalSlots: this.slots.size,
+    };
   }
 
   private startTicker(): void {

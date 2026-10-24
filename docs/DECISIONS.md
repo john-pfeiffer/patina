@@ -82,8 +82,18 @@ rejected: it makes the first launch depend on the network and on a working
 Python toolchain on the user's machine.
 
 Code signing and notarisation are not configured in CI (no certificates in
-the repository); the workflow produces unsigned dev artefacts named
+the repository); the workflow produces ad-hoc-signed dev artefacts named
 `Patine-dev-<sha7>-<OS>`.
+
+Two macOS facts learned the hard way: (1) Tauri signs the sidecar with the
+hardened runtime, which enforces library validation, so the PyInstaller
+bundle's Python framework (signed by another team) is refused at `dlopen`
+unless the app ships entitlements — `Entitlements.plist` grants
+`disable-library-validation`, `allow-unsigned-executable-memory` and
+`allow-jit` (numba) and is applied to every signed binary; (2) uv picks the
+newest managed CPython it can (a 3.15 beta on the CI runner) unless pinned,
+so `sidecar/.python-version` pins 3.13. CI now launches the bundled sidecar
+after `tauri build` and calls `/health` on all three platforms.
 
 ## Also decided while scaffolding
 
@@ -106,6 +116,16 @@ the repository); the workflow produces unsigned dev artefacts named
   playback starts (first onset unless Keep pre-roll); retrigger restarts there
   and kit beat markers count from it. Nudge moves the play start without
   moving the grid.
+- **Hold fills the slot.** The handoff says hold "plays through for the slot's
+  length"; a region shorter than the slot restarts from its snap point (hard
+  cut, declicked) until the slot ends rather than trailing silence, and a
+  longer one is cut at the slot end. Time-stretching a region to the slot
+  length is the other reading; it can be added as a per-slot `fit` choice.
+- **Region boundaries snap to the beat grid.** Chord-change boundaries from
+  the frame-wise estimator land within a frame or two of the true change;
+  they now move onto a tracked beat when one is within about a third of a
+  beat period (onsets otherwise), so a region's beat 0 is a beat of the
+  source and it plays in phase with the progression's grid.
 - **Typing a session bpm pins it**; otherwise session tempo follows the anchor.
 - **Inversions are tracked, shown, never matched** (§10) — `bass_note` is on
   every region and slot but strictness ignores it.

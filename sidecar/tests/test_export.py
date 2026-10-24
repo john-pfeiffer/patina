@@ -113,15 +113,17 @@ def test_full_mix_loops_and_bus(job_parts):
     assert np.abs(y2[8 * beat:]).max() == 0.0
 
 
-def test_hold_truncates_and_never_loops():
+def test_hold_fills_the_slot_by_repeating_and_truncates():
     rng = np.random.default_rng(0)
     render = (rng.standard_normal((2, SR)) * 0.2).astype(np.float32)   # 1 s = 2 beats at 120
     slot = Slot(id="s", progression_id="p", idx=0, chord_symbol="C", length_beats=4.0, region_id="r")
     out = render_slot(render, slot, 0.5, SR, rng, 2)
     assert out.shape == (2, 2 * SR)
-    assert np.abs(out[:, SR:]).max() == 0.0              # silence follows, no loop
+    # a region shorter than the slot restarts from its snap point: second
+    # second equals the first (hard cut, declicked at the join), no silence
+    assert np.allclose(out[:, SR + 200:2 * SR - 200], render[:, 200:SR - 200])
     assert np.allclose(out[:, 200:SR - 200], render[:, 200:SR - 200])
-    assert out[0, 0] == 0.0                              # declick ramp
+    assert out[0, 0] == 0.0 and out[0, SR] == 0.0        # declick ramps at start and at the join
     short = Slot(id="s", progression_id="p", idx=0, chord_symbol="C", length_beats=1.0, region_id="r")
     out2 = render_slot(render, short, 0.5, SR, rng, 2)
     assert out2.shape == (2, SR // 2)

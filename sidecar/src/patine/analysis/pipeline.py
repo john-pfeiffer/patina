@@ -274,7 +274,10 @@ def analyze_decoded(
     backend = chords.get_backend(opts.chord_model, None if opts.models_dir is None else str(opts.models_dir))
     frames = chords.estimate_frame_chords(feats, backend)
     min_region_s = _min_region_seconds(tempo_result.bpm, opts.min_region_beats)
-    segments = chords.segment_chords(frames, feats, min_duration_s=min_region_s, onsets=onsets)
+    segments = chords.segment_chords(
+        frames, feats, min_duration_s=min_region_s, onsets=onsets,
+        beats=beats, beat_period_s=(60.0 / tempo_result.bpm if tempo_result.bpm else None),
+    )
 
     downbeats = tempo_result.downbeats
     if not downbeats and tempo_result.backend == "librosa":

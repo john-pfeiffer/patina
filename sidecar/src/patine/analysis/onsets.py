@@ -62,10 +62,11 @@ def first_onset_in(
     start_s: float,
     end_s: float,
     *,
-    tolerance_s: float = 0.03,
+    tolerance_s: float = 0.12,
 ) -> float:
     """First onset at or after `start_s` (an onset up to `tolerance_s` earlier
-    counts as "at", clamped to the region). Falls back to `start_s`."""
+    counts as "at", clamped to the region; 120 ms covers a backtracked onset
+    ahead of the tracked beat a region now starts on). Falls back to `start_s`."""
     arr = np.asarray(onsets, dtype=np.float64)
     if arr.size == 0:
         return float(start_s)

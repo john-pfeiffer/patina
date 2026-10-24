@@ -13,6 +13,12 @@ const STRICTNESS_LABEL: Record<Strictness, string> = {
 };
 
 /** Ranked candidates for the selected slot (§5.2–5.3). */
+/** Region length in beats: declared when the user set it, else the tracked beat count. */
+function regionBeats(r: { declared_length_beats: number | null; beats: number[] }): number | null {
+  if (r.declared_length_beats !== null && r.declared_length_beats !== undefined) return r.declared_length_beats;
+  return r.beats.length > 0 ? r.beats.length : null;
+}
+
 export function CandidateDrawer({ slot }: { slot: Slot }) {
   const strictness = useStore((s) => s.ui.strictness);
   const setUi = useStore((s) => s.setUi);
@@ -54,6 +60,7 @@ export function CandidateDrawer({ slot }: { slot: Slot }) {
             <tr>
               <th>sample</th>
               <th>chord</th>
+              <th title="region length: beats (declared or tracked) · seconds; red when shorter than the slot">len</th>
               <th>label</th>
               <th title="transposition + timbral distance + (1 − confidence)">score</th>
               <th>transp</th>
@@ -70,6 +77,10 @@ export function CandidateDrawer({ slot }: { slot: Slot }) {
                 <tr key={`${r.id}:${c.transpose_semitones}`} className={current ? 'current' : ''}>
                   <td>{c.sample_name}</td>
                   <td className="chord">{chordSymbol(r.chord_root, r.chord_quality, r.bass_note) ?? '?'}</td>
+                  <td className={regionBeats(r) !== null && (regionBeats(r) as number) < slot.length_beats ? 'warn' : ''}>
+                    {regionBeats(r) !== null ? `${num(regionBeats(r) as number, 1)} b · ` : ''}
+                    {num(r.end_s - r.start_s, 2)} s
+                  </td>
                   <td>
                     {c.label}
                     {c.transpose_semitones !== 0 && ` (${transposeLabel(c.transpose_semitones)})`}

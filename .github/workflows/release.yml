@@ -1,0 +1,127 @@
+name: Release
+
+# Builds the installers for a release tag (v1.0.0, v1.1.0-beta.1, ...) and
+# publishes a GitHub Release with them. Tags live on main and are created by
+# hand after the develop -> main release PR merges (see README, Releasing).
+# Run it by hand (workflow_dispatch) on any branch to dry-run the build
+# without publishing.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Installer (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+          - os: windows-latest
+            name: Windows
+          - os: ubuntu-22.04
+            name: Linux
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: sidecar/uv.lock
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf
+      - run: pnpm install --frozen-lockfile
+      - name: Version in every file must match
+        run: node scripts/bump-version.mjs --check
+      - name: Tag must match the declared version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          declared=$(node -p "require('./package.json').version")
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$declared" != "$tag" ]; then
+            echo "::error::tag v$tag does not match package version $declared (run scripts/bump-version.mjs before tagging)"
+            exit 1
+          fi
+      - run: node scripts/build-sidecar.mjs
+      - name: Export signing secrets when configured
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            value="${!name}"
+            if [ -n "$value" ]; then
+              {
+                echo "$name<<PATINE_EOF"
+                echo "$value"
+                echo "PATINE_EOF"
+              } >> "$GITHUB_ENV"
+              echo "exported $name"
+            fi
+          done
+      - run: pnpm --filter @patine/desktop tauri build --config src-tauri/tauri.release.conf.json
+      - name: Smoke-test the bundled sidecar (launch, /health, /theory/parse)
+        shell: bash
+        run: node scripts/smoke-sidecar.mjs
+      - name: Collect installers
+        shell: bash
+        run: |
+          mkdir -p out
+          b=apps/desktop/src-tauri/target/release/bundle
+          for f in $b/dmg/*.dmg $b/nsis/*.exe $b/msi/*.msi $b/appimage/*.AppImage $b/deb/*.deb; do
+            [ -e "$f" ] && cp "$f" out/ || true
+          done
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Patine-${{ github.ref_name }}-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: installers
+          merge-multiple: true
+      - name: Pre-release when the tag has a suffix (v1.1.0-beta.1)
+        id: pre
+        run: echo "flag=$([[ '${{ github.ref_name }}' == *-* ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Patine ${{ github.ref_name }}
+          prerelease: ${{ steps.pre.outputs.flag }}
+          generate_release_notes: true
+          files: installers/*

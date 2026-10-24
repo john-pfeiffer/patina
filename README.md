@@ -35,14 +35,39 @@ pnpm dev:sidecar   # just the engine on http://127.0.0.1:47621 (token "dev")
 pnpm dev:ui        # just the UI in a browser on http://localhost:1420 (talks to the dev sidecar)
 ```
 
-## Release build
+## Branches and releases
+
+- `main` is the default branch and the released, known-good state. Until v1
+  it stays at the initial commit; nothing merges into it before then.
+- `develop` is where all work lands. Feature work (`feature/*`, `fix/*`,
+  `chore/*`, and Claude Code's `claude/*` branches) branches **from
+  `develop`** and comes back by squash-merged pull request **into `develop`**
+  with CI green. Two habits, because `main` is the default: set the base to
+  `develop` when opening a PR (the `Release source` check fails a PR into
+  `main` from anywhere else), and start Claude Code sessions from `develop`.
+- Test builds are the CI artefacts `Patine-dev-<sha7>-<OS>` from every push
+  to `develop`. A tracker item merged to `develop` is "Fixed in develop" with
+  that build id.
+- Releases: open a PR `develop → main` (merge commit), then tag the merge
+  commit `vX.Y.Z` on `main`. The `Release` workflow builds the installers and
+  publishes a GitHub Release; a tag with a suffix (`v1.1.0-beta.1`) publishes
+  a pre-release. Hotfixes branch from `main` as `hotfix/*`, PR into `main`,
+  then PR `main → develop`. Rulesets enforcing this are in
+  `.github/rulesets/`.
+- macOS dev builds are ad-hoc signed, not notarised (that needs the Apple
+  Developer ID secrets in CI). After downloading a DMG, macOS quarantines it;
+  either clear the flag before opening (`xattr -d com.apple.quarantine
+  ~/Downloads/Patine_*.dmg`) or, after copying the app to Applications, use
+  System Settings → Privacy & Security → "Open Anyway". If you see "Patine is
+  damaged", the build predates ad-hoc signing: `xattr -cr /Applications/Patine.app`
+  followed by `codesign --force --deep -s - /Applications/Patine.app` fixes it.
+- Versions: `pnpm version:bump 1.0.0` updates every file that declares the
+  version (CI and the release workflow check they agree); commit that on
+  `develop` before the release PR.
 
 ```sh
-pnpm build      # PyInstaller sidecar → Tauri bundle (dmg / nsis / appimage)
+pnpm build      # local: PyInstaller sidecar → Tauri bundle (dmg / nsis / appimage)
 ```
-
-CI builds unsigned dev artefacts for macOS, Windows and Linux on every push
-to `develop` and `main`.
 
 ## Layout
 

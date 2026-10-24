@@ -502,13 +502,33 @@ def _snap_boundaries(
     onsets: list[float],
     tol: float,
     min_len: float,
+    *,
+    beats: list[float] | None = None,
+    beat_tol: float = 0.0,
 ) -> tuple[list[float], list[float]]:
-    """Move region boundaries onto a nearby onset. Shared boundaries move
-    together so tiling survives; a move that would empty a region is skipped."""
+    """Move region boundaries onto the beat grid when a tracked beat is within
+    `beat_tol`, else onto a nearby onset within `tol`. Chord changes in real
+    music land on beats, and a region whose start is a beat plays in phase
+    with the progression's grid instead of a frame or two off it. Shared
+    boundaries move together so tiling survives; a move that would empty a
+    region is skipped."""
+
+    attack_tol = min(0.15, max(0.06, beat_tol / 0.35 * 0.25)) if beat_tol > 0 else 0.0
+
+    def snap(t: float) -> float:
+        if beats and beat_tol > 0:
+            b = snap_to_onset(t, beats, beat_tol)
+            if b != t:
+                # On the grid, at the attack: trackers place a beat some tens
+                # of ms after the (backtracked) onset that caused it, so land
+                # on that onset when one sits within a quarter beat of it.
+                return snap_to_onset(b, onsets, attack_tol) if onsets else b
+        return snap_to_onset(t, onsets, tol) if onsets else t
+
     n = len(starts)
     starts, ends = list(starts), list(ends)
     for i in range(n):
-        s_new = snap_to_onset(starts[i], onsets, tol)
+        s_new = snap(starts[i])
         prev_shared = i > 0 and abs(ends[i - 1] - starts[i]) < 1e-6
         if s_new >= ends[i] - min_len or (prev_shared and s_new <= starts[i - 1] + min_len):
             continue
@@ -519,7 +539,7 @@ def _snap_boundaries(
         next_shared = i + 1 < n and abs(ends[i] - starts[i + 1]) < 1e-6
         if next_shared:
             continue  # already handled through the next region's start
-        e_new = snap_to_onset(ends[i], onsets, tol)
+        e_new = snap(ends[i])
         if e_new > starts[i] + min_len:
             ends[i] = e_new
     return starts, ends
@@ -532,6 +552,8 @@ def segment_chords(
     min_duration_s: float,
     onsets: list[float] | None = None,
     snap_tolerance_s: float | None = None,
+    beats: list[float] | None = None,
+    beat_period_s: float | None = None,
     min_region_s: float = 0.15,
     keep_isolated_s: float = 0.2,
     gap_s: float = 0.25,
@@ -561,11 +583,15 @@ def segment_chords(
         return []
     starts = [feats.frame_start_s(a) for _, _, a, _ in items]
     ends = [feats.frame_end_s(b - 1) for _, _, _, b in items]
-    if onsets:
+    if onsets or beats:
         # the CQT frame grid plus its low-octave smearing puts a boundary up to
-        # about a frame and a half from the attack that caused it
+        # about a frame and a half from the attack that caused it; a tracked
+        # beat within about a third of a beat period wins over the raw onset
         tol = 1.5 * hop_s if snap_tolerance_s is None else snap_tolerance_s
-        starts, ends = _snap_boundaries(starts, ends, onsets, tol, min_region_s * 0.5)
+        beat_tol = min(0.3, max(0.08, 0.35 * beat_period_s)) if beat_period_s else 0.0
+        starts, ends = _snap_boundaries(
+            starts, ends, onsets or [], tol, min_region_s * 0.5, beats=beats, beat_tol=beat_tol
+        )
     segments: list[ChordSegment] = []
     for (root, quality, a, b), s, e in zip(items, starts, ends, strict=True):
         if e <= s:

@@ -156,6 +156,7 @@ def patch_slot(slot_id: str, body: SlotPatch, state=Depends(ctx)) -> Slot:
         state.repo.get_region(body.region_id)
         fields["region_id"] = body.region_id
         fields["transpose_semitones"] = body.transpose_semitones or 0
+        _ensure_member(state, prog.set_id, body.region_id)
     elif body.transpose_semitones is not None:
         fields["transpose_semitones"] = body.transpose_semitones
     if body.locked is not None:
@@ -163,6 +164,19 @@ def patch_slot(slot_id: str, body: SlotPatch, state=Depends(ctx)) -> Slot:
     if body.pattern is not None:
         fields["pattern"] = body.pattern
     return state.repo.update_slot(slot_id, **fields)
+
+
+def _ensure_member(state, set_id: str, region_id: str) -> None:
+    """A region that plays in a slot is part of the set: it is conformed toward
+    the anchor, so it belongs in the member list with its delta readout. The
+    first member of an empty set becomes the anchor (§6 anchor rules)."""
+    set_ = state.repo.get_set(set_id)
+    if any(m.region.id == region_id for m in set_.members):
+        return
+    set_ = state.repo.add_member(set_id, region_id)
+    if set_.anchor_region_id is None:
+        state.repo.update_set(set_id, anchor_region_id=region_id)
+    services.invalidate_set(state, set_id)
 
 
 def _anchor_metrics(state, set_):
@@ -209,6 +223,7 @@ def reroll_progression(prog_id: str, body: RerollRequest, state=Depends(ctx)) ->
             continue
         region_id, transpose = pick
         state.repo.update_slot(slot_id, region_id=region_id, transpose_semitones=transpose)
+        _ensure_member(state, prog.set_id, region_id)
     return state.repo.get_progression(prog_id)
 
 

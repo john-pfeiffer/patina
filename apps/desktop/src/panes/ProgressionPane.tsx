@@ -207,9 +207,13 @@ export function ProgressionPane() {
               />
               <button
                 type="button"
-                disabled={!progression || progression.slots.length === 0}
+                disabled={!progression || progression.slots.length === 0 || rerollAmount <= 0}
                 onClick={() => void reroll()}
-                title={`reassign ${rerollAmount}% of unlocked slots from their candidate pools at “${strictness}” strictness`}
+                title={
+                  rerollAmount <= 0
+                    ? 'turn Reroll Amount above 0 % first'
+                    : `reassign ${rerollAmount}% of unlocked slots from their candidate pools at “${strictness}” strictness`
+                }
               >
                 reroll
               </button>

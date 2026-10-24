@@ -47,6 +47,14 @@ export function SlotRow({ slot, region, sampleName, render, lastGood, selected, 
           )}
         </span>
         <RenderBadge status={slot.region_id ? render : undefined} previous={lastGood} empty="—" />
+        <button
+          type="button"
+          className={selected ? 'active' : ''}
+          onClick={select}
+          title={selected ? 'close the candidate drawer' : 'open the candidate drawer for this slot'}
+        >
+          {selected ? 'close' : region ? 'change…' : 'candidates…'}
+        </button>
         <span className="spacer" />
         <label className="check" title="locked slots are untouched by Reroll">
           <input type="checkbox" checked={slot.locked} onChange={(e) => void patchSlot(slot.id, { locked: e.target.checked })} />
