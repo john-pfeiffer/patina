@@ -22,9 +22,13 @@ function JobRow({ job }: { job: Job }) {
   const cancelJob = useStore((s) => s.cancelJob);
   const active = job.status === 'queued' || job.status === 'running';
   const files = job.result && Array.isArray(job.result.files) ? (job.result.files as unknown[]).filter((f): f is string => typeof f === 'string') : [];
+  const take = job.result && typeof job.result.take === 'number' ? job.result.take : null;
   return (
     <div className={`job job-${job.status}`} title={job.error ?? job.message ?? ''}>
-      <span className="job-label">{jobLabel(job)}</span>
+      <span className="job-label">
+        {jobLabel(job)}
+        {take !== null ? <span className="muted"> · take {take}</span> : null}
+      </span>
       {active ? <ProgressBar value={job.progress} label={`${job.status} ${Math.round(job.progress * 100)}%`} /> : <span className={`badge ${job.status === 'done' ? 'badge-ok' : job.status === 'failed' ? 'badge-bad' : 'badge-muted'}`}>{job.status}</span>}
       {job.message && active && <span className="muted">{job.message}</span>}
       {job.error && <span className="warn">{job.error}</span>}

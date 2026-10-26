@@ -376,6 +376,9 @@ class ExportRequest(BaseModel):
     kind: Literal["full", "stems", "kit", "midi"]
     out_dir: str
     loops: int = 1
+    # Exports are numbered takes (`<name>_t03_full.wav`) and never overwrite;
+    # `overwrite` restores the fixed `<name>_full.wav` names.
+    overwrite: bool = False
 
 
 class SidecarInfo(BaseModel):

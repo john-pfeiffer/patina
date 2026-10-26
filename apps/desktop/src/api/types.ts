@@ -344,6 +344,8 @@ export interface ExportRequest {
   kind: ExportKind;
   out_dir: string;
   loops: number;
+  /** Exports are numbered takes that never overwrite; true restores the fixed `<name>_full.wav` names. */
+  overwrite?: boolean;
 }
 
 export interface SidecarInfo {

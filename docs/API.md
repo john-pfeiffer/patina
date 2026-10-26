@@ -87,7 +87,7 @@ SSE events (`event:` name, `data:` JSON):
 | Method | Path | Body → Response |
 |---|---|---|
 | GET | `/renders/{cache_key}.wav` | → `audio/wav` float32, session sample rate. Served only when `status == ready`. |
-| POST | `/export` | `ExportRequest {progression_id, kind: full\|stems\|kit\|midi, out_dir, loops}` → `Job`; result `{files: string[]}`. Renders that are missing are produced first. `full` writes `<name>_full.wav`, `stems` one WAV per slot, `midi` `<name>.mid`, and `kit` a self-contained folder `<name>_kit/` holding `NN_<chord>.wav` per slot plus `patine.json`. |
+| POST | `/export` | `ExportRequest {progression_id, kind: full\|stems\|kit\|midi, out_dir, loops, overwrite?}` → `Job`; result `{files: string[], take: int\|null, prefix}`. Renders that are missing are produced first. Every export is a numbered take that never overwrites an earlier one: `<name>_tNN_full.wav`, `stems` one `<name>_tNN_slotNN_<chord>.wav` per slot, `midi` `<name>_tNN.mid`, and `kit` a self-contained folder `<name>_tNN_kit/` holding `NN_<chord>.wav` per slot plus `patine.json`. Full, stems and midi also write `<name>_tNN.json`, a record of the take (chords, regions, sample paths, bounds, transposition, set settings, deltas); the kit carries the same record inside its `patine.json`. `overwrite: true` restores the fixed `<name>_full.wav` names. |
 
 ## Jobs
 

@@ -336,7 +336,7 @@ def invalidate_region(state: AppState, region_id: str) -> None:
 
 def run_export_job(state: AppState, job: JobContext) -> dict[str, Any]:
     from ..conform.renderer import cache_key, render_region
-    from ..export.exporter import ExportJob, export_progression
+    from ..export.exporter import ExportJob, export_take
 
     prog = state.repo.get_progression(job.payload["progression_id"])
     set_ = state.repo.get_set(prog.set_id)
@@ -347,10 +347,16 @@ def run_export_job(state: AppState, job: JobContext) -> dict[str, Any]:
     regions: dict[str, Region] = {}
     renders: dict[str, str] = {}
     deltas: dict[str, dict] = {}
+    sample_paths: dict[str, str] = {}
     assigned = [s for s in prog.slots if s.region_id]
     for i, slot in enumerate(assigned):
         region = state.repo.get_region(slot.region_id)  # type: ignore[arg-type]
         regions[region.id] = region
+        if region.sample_id not in sample_paths:
+            try:
+                sample_paths[region.sample_id] = state.repo.get_sample(region.sample_id).path
+            except Exception:  # noqa: BLE001 - the record is informational
+                pass
         if kind == "midi":
             continue
         job.progress(0.1 + 0.6 * i / max(1, len(assigned)), f"rendering slot {slot.idx + 1}")
@@ -371,9 +377,10 @@ def run_export_job(state: AppState, job: JobContext) -> dict[str, Any]:
         kind=kind, progression=prog, set_=set_, regions=regions, renders=renders, deltas=deltas,
         out_dir=out_dir, loops=int(job.payload.get("loops", 1)),
         sample_rate=int(job.payload.get("sample_rate", 48000)),
+        sample_paths=sample_paths, overwrite=bool(job.payload.get("overwrite", False)),
     )
-    files = export_progression(ej)
-    return {"files": [str(f) for f in files]}
+    result = export_take(ej)
+    return {"files": [str(f) for f in result.files], "take": result.take, "prefix": result.prefix}
 
 
 def register_job_handlers(state: AppState) -> None:
