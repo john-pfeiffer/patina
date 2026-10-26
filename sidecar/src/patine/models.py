@@ -160,6 +160,7 @@ class Sample(BaseModel):
     bpm_confidence: float | None = None
     beats: list[float] = Field(default_factory=list)
     downbeats: list[float] = Field(default_factory=list)
+    onsets: list[float] = Field(default_factory=list)     # §4.4 transients, whole file
     key_estimate: str | None = None
     key_confidence: float | None = None
     metrics: TonalMetrics | None = None

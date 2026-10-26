@@ -10,7 +10,10 @@ UI falls back to `http://127.0.0.1:47621` with token `dev`, which is what
 Models are the Pydantic classes in `sidecar/src/patine/models.py`; JSON field
 names are identical. Times are seconds, absolute inside the source file unless
 stated. Pitch classes are note names with sharps (`C#`), qualities are
-`maj min 7 m7 maj7 dim sus2 sus4` (analysis) plus `aug dim7 m7b5 6 m6` (typed).
+`maj min 7 m7 maj7 dim sus2 sus4` (analysis), `5` (a bare root or root+fifth,
+reported where asserting a third would be a guess; it matches any chord on
+its root at `function` and `two_tones` strictness) plus `aug dim7 m7b5 6 m6`
+(typed).
 
 ## Meta
 
@@ -33,16 +36,16 @@ SSE events (`event:` name, `data:` JSON):
 
 | Method | Path | Body → Response |
 |---|---|---|
-| POST | `/samples` | `IngestRequest {paths}` → `{samples: Sample[], jobs: Job[]}`. Directories are walked recursively; known paths return the existing sample. Analysis is queued. |
+| POST | `/samples` | `IngestRequest {paths}` → `{samples: Sample[], jobs: Job[]}`. Directories are walked recursively; known paths return the existing sample (re-queued for analysis when it was made by an older `analysis_version`). Analysis is queued. |
 | GET | `/samples` | → `Sample[]` with `regions` filled |
 | GET | `/samples/{id}` | → `Sample` |
 | DELETE | `/samples/{id}` | → 204 |
-| POST | `/samples/{id}/reanalyze` | → `Job` (§4: re-runs only on explicit request) |
+| POST | `/samples/{id}/reanalyze` | → `Job` (§4: re-runs only on explicit request; the sidecar also re-queues samples analysed by an older `analysis_version` at startup). A re-run keeps the ids of regions that overlap the old ones (IoU ≥ 0.5), so set membership, the anchor and slot assignments survive; `source: user` regions are never touched. |
 | GET | `/samples/{id}/peaks?bins=800` | → `{bins, duration, peaks: number[]}` mono abs-peak per bin, 0..1 |
 | GET | `/samples/{id}/audio` | → `audio/wav` whole source file |
 | POST | `/samples/{id}/regions` | `RegionCreate` → `Region` (user region; measured immediately) |
 | GET | `/regions/{id}` | → `Region` |
-| PATCH | `/regions/{id}` | `RegionPatch` → `Region`. Changing bounds re-measures; any change invalidates that region's renders (clients will see `render.updated` with `stale`). |
+| PATCH | `/regions/{id}` | `RegionPatch` → `Region`. Changing bounds re-measures; any change invalidates that region's renders (clients will see `render.updated` with `stale`). Any edit to an analysis region makes it `source: user`, so a reanalysis leaves it alone. |
 | DELETE | `/regions/{id}` | → 204 |
 | GET | `/regions/{id}/audio` | → `audio/wav` raw region slice (solo audition, A/B against conformed) |
 

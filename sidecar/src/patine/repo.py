@@ -72,6 +72,7 @@ def row_to_sample(r: sqlite3.Row, regions: list[Region] | None = None) -> Sample
         bpm_confidence=r["bpm_confidence"],
         beats=loads(r["beats"], []),
         downbeats=loads(r["downbeats"], []),
+        onsets=loads(r["onsets"], []) if "onsets" in r.keys() else [],
         key_estimate=r["key_estimate"],
         key_confidence=r["key_confidence"],
         metrics=_metrics(r["metrics"]),
@@ -172,6 +173,16 @@ class Repo:
         with self.db.tx() as conn:
             conn.execute("DELETE FROM samples WHERE id = ?", (sample_id,))
 
+    def stale_sample_ids(self, current_version: int) -> list[str]:
+        """Samples analysed by an older pipeline (or never versioned) that are
+        not already queued or running."""
+        rows = self.db.all(
+            "SELECT id FROM samples WHERE analysis_status IN ('done', 'failed') "
+            "AND (analysis_version IS NULL OR analysis_version < ?) ORDER BY added_at",
+            (current_version,),
+        )
+        return [r["id"] for r in rows]
+
     # --- regions -------------------------------------------------------------------
 
     def regions_for_sample(self, sample_id: str) -> list[Region]:
@@ -195,13 +206,52 @@ class Repo:
             conn.execute(f"INSERT INTO regions ({', '.join(cols)}) VALUES ({marks})", (rid, sample_id, source, *f.values()))
         return self.get_region(rid)
 
-    def replace_analysis_regions(self, sample_id: str, regions: list[dict[str, Any]]) -> list[Region]:
-        """Drop the previous analysis regions (user regions survive) and insert
-        the new ones. Member/slot references to dropped regions cascade to NULL."""
+    def replace_analysis_regions(
+        self, sample_id: str, regions: list[dict[str, Any]], *, match_iou: float = 0.5, user_iou: float = 0.8
+    ) -> list[Region]:
+        """Replace a sample's analysis regions with a new analysis, keeping ids
+        where the new and old regions overlap (temporal IoU >= `match_iou`,
+        greedy by overlap) so set membership, the anchor and slot assignments
+        survive a reanalysis; a matched region keeps its user overrides and
+        declared length. Old regions nothing matches are deleted; new regions
+        that cover a span a user region already owns (IoU >= `user_iou`) are
+        not inserted. Returns the sample's analysis regions in order."""
+        old = [r for r in self.regions_for_sample(sample_id) if r.source == "analysis"]
+        users = [r for r in self.regions_for_sample(sample_id) if r.source == "user"]
+
+        def iou(a0: float, a1: float, b0: float, b1: float) -> float:
+            inter = max(0.0, min(a1, b1) - max(a0, b0))
+            union = max(a1, b1) - min(a0, b0)
+            return inter / union if union > 0 else 0.0
+
+        pairs = sorted(
+            ((iou(f["start_s"], f["end_s"], o.start_s, o.end_s), i, j) for i, f in enumerate(regions) for j, o in enumerate(old)),
+            reverse=True,
+        )
+        matched_new: dict[int, int] = {}
+        matched_old: set[int] = set()
+        for score, i, j in pairs:
+            if score < match_iou:
+                break
+            if i in matched_new or j in matched_old:
+                continue
+            matched_new[i] = j
+            matched_old.add(j)
+        keep_cols = ("user_overrides", "declared_length_beats")
+        out: list[Region] = []
         with self.db.tx() as conn:
-            conn.execute("DELETE FROM regions WHERE sample_id = ? AND source = 'analysis'", (sample_id,))
-        out = []
+            for j, o in enumerate(old):
+                if j not in matched_old:
+                    conn.execute("DELETE FROM regions WHERE id = ?", (o.id,))
         for i, fields in enumerate(regions):
+            fields = {k: v for k, v in fields.items() if k not in ("id", "source")}
+            if i in matched_new:
+                o = old[matched_new[i]]
+                f = {k: v for k, v in fields.items() if k not in keep_cols}
+                out.append(self.update_region(o.id, **f, position=i))
+                continue
+            if any(iou(fields["start_s"], fields["end_s"], u.start_s, u.end_s) >= user_iou for u in users):
+                continue
             out.append(self.insert_region(sample_id, {**fields, "position": i}, source="analysis"))
         return out
 

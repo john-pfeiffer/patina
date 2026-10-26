@@ -60,13 +60,14 @@ def create_app(state: AppState | None = None) -> FastAPI:
         workers = int(os.environ.get("PATINE_WORKERS", "2"))
         state = AppState(DataPaths(data_dir), token, workers)
 
-    from .api import export, jobs, library, progressions, renders, sets, theory
+    from .api import export, jobs, library, progressions, renders, services, sets, theory
     from .api.services import register_job_handlers
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         register_job_handlers(state)
         state.worker.start()
+        services.requeue_stale_analyses(state)
         log.info("Patine sidecar %s serving data dir %s", __version__, state.paths.root)
         try:
             yield

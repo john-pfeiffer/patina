@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS samples (
@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS samples (
   bpm_confidence   REAL,
   downbeats        TEXT,            -- JSON [] seconds, may be empty
   beats            TEXT,            -- JSON [] seconds, whole file
+  onsets           TEXT,            -- JSON [] seconds, whole file (§4.4), v2
   key_estimate     TEXT,
   key_confidence   REAL,
   metrics          TEXT,            -- JSON TonalMetrics measured over the whole file
@@ -190,6 +191,13 @@ class Database:
         if version < 1:
             conn.executescript(SCHEMA)
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+            conn.commit()
+            return
+        if version < 2:
+            # Whole-file onsets, so a region can be re-measured and its
+            # transient edited without re-running the file.
+            conn.execute("ALTER TABLE samples ADD COLUMN onsets TEXT")
+            conn.execute("PRAGMA user_version = 2")
             conn.commit()
         # Future migrations go here, each guarded by `if version < N:`.
 

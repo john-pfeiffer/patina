@@ -43,6 +43,8 @@ def ingest(state: AppState, paths: list[str]) -> tuple[list[Sample], list[Any]]:
         existing = state.repo.sample_by_path(p)
         if existing is not None:
             samples.append(existing)
+            if _analysis_is_stale(existing):
+                jobs.append(queue_analysis(state, existing.id, priority=7))
             continue
         try:
             duration, sr, ch = probe(p)
@@ -55,10 +57,28 @@ def ingest(state: AppState, paths: list[str]) -> tuple[list[Sample], list[Any]]:
     return samples, jobs
 
 
-def queue_analysis(state: AppState, sample_id: str):
+def _analysis_is_stale(sample: Sample) -> bool:
+    return sample.analysis_status in ("done", "failed") and (
+        sample.analysis_version is None or sample.analysis_version < ANALYSIS_VERSION
+    )
+
+
+def queue_analysis(state: AppState, sample_id: str, *, priority: int = 5):
     state.repo.update_sample(sample_id, analysis_status="pending", analysis_progress=0.0, analysis_error=None)
     publish_sample(state, sample_id, "queued")
-    return state.worker.submit("analyze", {"sample_id": sample_id}, priority=5, dedupe_key=sample_id)
+    return state.worker.submit("analyze", {"sample_id": sample_id}, priority=priority, dedupe_key=sample_id)
+
+
+def requeue_stale_analyses(state: AppState) -> int:
+    """Queue every sample analysed by an older pipeline, behind fresh work
+    (priority 9). Called at startup; region ids survive the re-run
+    (`Repo.replace_analysis_regions`)."""
+    stale = state.repo.stale_sample_ids(ANALYSIS_VERSION)
+    for sid in stale:
+        queue_analysis(state, sid, priority=9)
+    if stale:
+        log.info("queued %d sample(s) for reanalysis (analysis v%d)", len(stale), ANALYSIS_VERSION)
+    return len(stale)
 
 
 def publish_sample(state: AppState, sample_id: str, message: str = "") -> None:
@@ -118,6 +138,7 @@ def run_analysis_job(state: AppState, job: JobContext) -> dict[str, Any]:
         bpm_confidence=result.bpm_confidence,
         beats=list(result.beats),
         downbeats=list(result.downbeats),
+        onsets=[float(o) for o in result.context.onsets],
         key_estimate=result.key_estimate,
         key_confidence=result.key_confidence,
         metrics=result.metrics.model_dump(),
@@ -128,9 +149,12 @@ def run_analysis_job(state: AppState, job: JobContext) -> dict[str, Any]:
     )
     regions = state.repo.replace_analysis_regions(sample_id, [_region_fields(r) for r in result.regions])
     publish_sample(state, sample_id, "done")
-    for set_id in {sid for r in regions for sid in state.repo.sets_containing(r.id)}:
-        state.events.publish("set.updated", {"set_id": set_id})
-    return {"regions": len(regions)}
+    # Kept ids may carry new bounds and metrics: their renders re-key lazily,
+    # and the sets that hold them need to know.
+    touched = {sid for r in regions for sid in state.repo.sets_containing(r.id)}
+    for set_id in touched:
+        invalidate_set(state, set_id)
+    return {"regions": len(regions), "recovered": sum(1 for r in result.regions if r.recovered)}
 
 
 def remeasure_region(state: AppState, region: Region, *, chord_root: str | None = None, chord_quality: str | None = None) -> Region:
@@ -146,7 +170,7 @@ def remeasure_region(state: AppState, region: Region, *, chord_root: str | None 
         tuning_cents=sample.tuning_cents or 0.0,
         beats=list(sample.beats),
         downbeats=list(sample.downbeats),
-        onsets=[],
+        onsets=list(sample.onsets),
         key_estimate=sample.key_estimate,
     )
     res = measure_region(y, sr, region.start_s, region.end_s, ctx, chord_root=chord_root, chord_quality=chord_quality)

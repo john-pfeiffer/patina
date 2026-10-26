@@ -152,3 +152,33 @@ after `tauri build` and calls `/health` on all three platforms.
   `audiooutput` enumeration exist on WebView2, not on WKWebView, so on macOS
   Preferences › Audio reports the system output and says where to change it
   rather than offering a picker that does nothing.
+- **Chord recall: harmonic chroma, a structure gate, a one-beat observation
+  window, a whole-span fallback and the `5` quality.** Samples came back with
+  no regions for three reasons: a broadband floor (drums, noise, reverb) of a
+  third of the chord's level made the old flatness gate call every frame
+  "no chord"; a melody or arpeggio was decoded one chord per note and then
+  merged away; and a file whose frames all decoded as no-chord was simply
+  dropped. The chord chroma is now folded from the harmonic part of the CQT
+  (`librosa.decompose.hpss`, 3-frame × 31-sub-bin kernels; the full mix still
+  feeds busyness and the register centroid), the no-chord state scores
+  `0.45 + 0.55 × max(silence, no_structure)` where `no_structure` is low when
+  the best maj/min template stands out from the median fit by 0.16 or more
+  (noise, drums and rumble stay below 0.14), the HMM sees chroma averaged over
+  about one beat (3–9 frames) with stickiness of two beats, an extended
+  quality is only allowed when each tone it adds stands 1.4× above the floor
+  of the unused pitch classes (a four-note template otherwise wins under
+  drums by covering more floor), and a file that still decodes as nothing
+  gets one region over its longest tonal span from the floor-subtracted mean
+  chroma, capped at confidence 0.5 so it ranks behind decoded regions. A bare
+  root or root+fifth is reported as quality `5` instead of an invented third;
+  `C5` matches any chord on C at `function`/`two_tones` strictness, parses
+  from typed progressions and renders as `I5`. `scripts/eval_chords.py`
+  measures the share of files with at least one region on a real folder,
+  before (`--legacy`) and after.
+- **Reanalysis keeps ids.** `ANALYSIS_VERSION` is 2; samples analysed by an
+  older version are re-queued at startup and on re-ingest. A re-run matches
+  new regions to old ones by temporal overlap and updates them in place, so
+  set membership, the anchor and slot assignments survive; any region the
+  user has edited becomes `source: user` and is never re-cut. Whole-file
+  onsets are now stored on the sample (schema v2) so a region can be
+  re-measured and its transient edited without re-running the file.

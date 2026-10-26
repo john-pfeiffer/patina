@@ -113,6 +113,8 @@ export interface Sample {
   bpm_confidence: number | null;
   beats: number[];
   downbeats: number[];
+  /** Whole-file transients (§4.4), seconds. */
+  onsets: number[];
   key_estimate: string | null;
   key_confidence: number | null;
   metrics: TonalMetrics | null;

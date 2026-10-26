@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from test_analysis_synth import PROGRESSION, chord_signal, clicks, noise
+from test_analysis_synth import PROGRESSION, chord_signal, clicks, noise, sine
 
 from patine.analysis import activity, chords, onsets, tempo, tuning
 from patine.analysis import key as keymod
@@ -180,3 +180,92 @@ def test_busyness_and_register():
     empty = plain.slice_frames(0, 0)
     assert isinstance(empty, ChromaFeatures)
     assert activity.busyness(empty) == 0.0 and activity.register_centroid_hz(empty) == 0.0
+
+
+# --- recall: harmonic chroma, gates, windows, fallback, bare roots ------------------------
+
+from test_analysis_synth import arpeggio_signal, oneshot_note, pad_under_drums  # noqa: E402
+
+from patine.analysis.chroma import cosine_similarity  # noqa: E402
+
+
+def test_harmonic_chroma_cleans_a_pad_under_drums():
+    y, _ = pad_under_drums(((0, "maj"),), beats_per_chord=8, drum_db=6.0)
+    full = compute_chroma(y, SR, hpss=False)
+    harm = compute_chroma(y, SR, hpss=True)
+    template = chords.chord_template(0, "maj")
+    assert cosine_similarity(harm.mean_weighted(), template) >= cosine_similarity(full.mean_weighted(), template) + 0.05
+    backend = chords.TemplateBackend()
+    assert backend.similarities(harm)[chords.NO_CHORD].mean() < backend.similarities(full)[chords.NO_CHORD].mean()
+    # the full-mix views are untouched so busyness and register still see everything
+    assert np.allclose(harm.treble, full.treble)
+    assert np.allclose(harm.cqt, full.cqt)
+
+
+def test_no_chord_floor_and_gates():
+    backend = chords.TemplateBackend()
+    pure = compute_chroma(np.concatenate([np.zeros(SR // 10, dtype=np.float32), sine(220.0, 2.0, SR, 0.3)]), SR)
+    sims = backend.similarities(pure)
+    loud = pure.energy > 0.1 * pure.energy.max()
+    assert np.all(sims[:chords.N_CHORD_STATES, loud].max(axis=0) - sims[chords.NO_CHORD, loud] >= 0.15)
+    white = compute_chroma(noise(4.0, SR, 0.3), SR)
+    ws = backend.similarities(white)
+    frac = np.mean(ws[chords.NO_CHORD] >= ws[:chords.N_CHORD_STATES].max(axis=0) + 0.3)
+    assert frac >= 0.9
+
+
+def test_windowed_observations_hold_an_arpeggio():
+    y, _ = arpeggio_signal(0, "maj", bpm=120.0, bars=2, ring_s=0.15)
+    feats = compute_chroma(y, SR)
+    backend = chords.TemplateBackend()
+    target = chords.state_index(0, "maj")
+    raw = chords.estimate_frame_chords(feats, backend, window_frames=1)
+    win = chords.estimate_frame_chords(feats, backend, window_frames=5)
+    assert np.mean(win.states == target) >= 0.85
+    assert np.mean(win.states == target) >= np.mean(raw.states == target)
+    assert chords.observation_window_frames(0.0929, 0.5, 0.9) == 5
+    assert chords.observation_window_frames(0.0929, 0.5, 0.1) == 5          # low confidence → 0.5 s
+    assert chords.observation_window_frames(0.0929, 0.25, 0.9) == 3         # clipped to the minimum
+    assert chords.observation_window_frames(0.0929, 2.0, 0.9) == 9          # clipped to the maximum
+    assert chords.observation_window_frames(0.0929, 0.5, 0.9, window_beats=0) == 1
+    assert chords.expected_chord_seconds(0.5, 0.9) == pytest.approx(1.0)
+    assert chords.expected_chord_seconds(None, 0.9) == 1.5
+
+
+def test_fallback_recovers_a_chord_and_rejects_noise():
+    y, _ = pad_under_drums(((0, "maj"),), beats_per_chord=8, drum_db=6.0)
+    feats = compute_chroma(y, SR)
+    all_none = chords.FrameChords(
+        states=np.full(feats.n_frames, chords.NO_CHORD),
+        probs=np.full((chords.N_STATES, feats.n_frames), 1.0 / chords.N_STATES),
+        posterior=np.full((chords.N_STATES, feats.n_frames), 1.0 / chords.N_STATES),
+    )
+    seg = chords.fallback_segment(all_none, feats)
+    assert seg is not None
+    assert (seg.root, seg.quality) == (0, "maj")
+    assert seg.confidence <= chords.FALLBACK_MAX_CONFIDENCE
+    for bad in (noise(4.0, SR, 0.3), np.zeros(SR * 4, dtype=np.float32)):
+        f = compute_chroma(bad, SR)
+        empty = chords.FrameChords(
+            states=np.full(f.n_frames, chords.NO_CHORD),
+            probs=np.full((chords.N_STATES, f.n_frames), 1.0 / chords.N_STATES),
+            posterior=np.full((chords.N_STATES, f.n_frames), 1.0 / chords.N_STATES),
+        )
+        assert chords.fallback_segment(empty, f) is None
+
+
+def test_bare_root_rule():
+    pluck = compute_chroma(oneshot_note(55, duration=1.5), SR)
+    root, quality, bass, conf, _ = chords.label_segment(pluck, 0, pluck.n_frames, 7, "maj", allow_reroot=True)
+    assert (root, quality) == (7, "5") and bass == 7 and conf > 0.0
+    # a wrong root hypothesis is corrected only when re-rooting is allowed:
+    # from D the strong G is a sus tone, so the bare-root rule stays silent
+    _, wrong_q, _, _, _ = chords.label_segment(pluck, 0, pluck.n_frames, 2, "maj", allow_reroot=False)
+    assert wrong_q != "5"
+    fixed_root, fixed_q, _, _, _ = chords.label_segment(pluck, 0, pluck.n_frames, 2, "maj", allow_reroot=True)
+    assert (fixed_root, fixed_q) == (7, "5")
+    # sus chords and clean triads are never relabelled
+    sus = compute_chroma(mono(((7, "sus4"),), beats_per_chord=4), SR)
+    assert chords.label_segment(sus, 0, sus.n_frames, 7, "maj")[1] == "sus4"
+    triad = compute_chroma(mono(((7, "maj"),), beats_per_chord=4), SR)
+    assert chords.label_segment(triad, 0, triad.n_frames, 7, "maj")[1] == "maj"

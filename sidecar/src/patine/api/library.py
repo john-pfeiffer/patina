@@ -136,6 +136,10 @@ def patch_region(region_id: str, body: RegionPatch, state=Depends(ctx)) -> Regio
         fields["declared_length_beats"] = body.declared_length_beats
     if body.user_overrides is not None:
         fields["user_overrides"] = body.user_overrides
+    # A region the user has shaped is theirs: it survives reanalysis whole
+    # (Repo.replace_analysis_regions) instead of being re-cut by the pipeline.
+    if fields and region.source == "analysis":
+        fields["source"] = "user"
     region = state.repo.update_region(region_id, **fields)
     if bounds_changed:
         region = services.remeasure_region(
