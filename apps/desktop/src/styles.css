@@ -808,3 +808,36 @@ button.active:hover:not(:disabled) {
   background: var(--accent);
   filter: brightness(1.12);
 }
+
+/* Region editor */
+
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.waveform {
+  display: block;
+  border: 1px solid var(--border-strong);
+  background: #fff;
+  touch-action: none;
+}
+
+.editor-ruler {
+  margin: 0;
+}
+
+.editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.editor-col h3:first-child {
+  margin-top: 0;
+}
+
+.editor .region-edit {
+  margin-top: 0;
+}

@@ -21,6 +21,7 @@ const region = (root: string, quality: string): Region => ({
   metrics: null,
   user_overrides: {
     keep_preroll: false,
+    snap_s: null,
     nudge_ms: 0,
     warp_markers: [],
     warp_strength: null,

@@ -133,8 +133,8 @@ export const api = {
     remove: (id: string) => request<void>('DELETE', `/samples/${id}`),
     reanalyze: (id: string) => request<Job>('POST', `/samples/${id}/reanalyze`),
     reanalyzeAll: () => request<Job[]>('POST', '/samples/reanalyze'),
-    peaks: (id: string, bins = 800) => request<Peaks>('GET', `/samples/${id}/peaks${q({ bins })}`),
-    audioPath: (id: string) => `/samples/${id}/audio`,
+    peaks: (id: string, bins = 800, start?: number, end?: number) => request<Peaks>('GET', `/samples/${id}/peaks${q({ bins, start, end })}`),
+    audioPath: (id: string, start?: number, end?: number) => `/samples/${id}/audio${q({ start, end })}`,
     createRegion: (id: string, body: RegionCreate) => request<Region>('POST', `/samples/${id}/regions`, body),
   },
 

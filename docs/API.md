@@ -65,11 +65,11 @@ clears the mark when they come back; it never deletes. `Sample` carries
 | GET | `/settings` | → `Settings {analysis_paused, analysis_hpss, analysis_window_beats, analysis_fallback, scan_on_startup}` |
 | PATCH | `/settings` | `SettingsPatch` → `Settings`. `analysis_paused` parks analysis jobs (renders and exports keep running); the analysis options apply to the next analysis |
 
-| GET | `/samples/{id}/peaks?bins=800` | → `{bins, duration, peaks: number[]}` mono abs-peak per bin, 0..1 |
-| GET | `/samples/{id}/audio` | → `audio/wav` whole source file |
+| GET | `/samples/{id}/peaks?bins=800&start=&end=` | → `{bins, duration, start, end, peaks: number[]}` mono abs-peak per bin, 0..1, over the whole file or the window `[start, end]` (the region editor zooms this way) |
+| GET | `/samples/{id}/audio?start=&end=` | → `audio/wav` whole source file, or a raw float32 slice when `start`/`end` are given (auditioning a draft selection) |
 | POST | `/samples/{id}/regions` | `RegionCreate` → `Region` (user region; measured immediately) |
 | GET | `/regions/{id}` | → `Region` |
-| PATCH | `/regions/{id}` | `RegionPatch` → `Region`. Changing bounds re-measures; any change invalidates that region's renders (clients will see `render.updated` with `stale`). Any edit to an analysis region makes it `source: user`, so a reanalysis leaves it alone. |
+| PATCH | `/regions/{id}` | `RegionPatch` → `Region`. Changing bounds re-measures (bounds are validated against the file before anything is written); any change invalidates that region's renders (clients will see `render.updated` with `stale`). `user_overrides.snap_s` sets the snap point (transient) by hand, in absolute seconds inside the region, and wins over the detected first onset. Any edit to an analysis region makes it `source: user`, so a reanalysis leaves it alone. |
 | DELETE | `/regions/{id}` | → 204 |
 | GET | `/regions/{id}/audio` | → `audio/wav` raw region slice (solo audition, A/B against conformed) |
 

@@ -62,21 +62,56 @@ def reanalyze(sample_id: str, state=Depends(ctx)) -> Job:
 
 
 @router.get("/samples/{sample_id}/peaks")
-def peaks(sample_id: str, bins: int = Query(800, ge=10, le=10000), state=Depends(ctx)) -> dict:
+def peaks(
+    sample_id: str,
+    bins: int = Query(800, ge=10, le=10000),
+    start: float | None = Query(None, ge=0.0, description="window start, seconds (default: whole file)"),
+    end: float | None = Query(None, ge=0.0, description="window end, seconds"),
+    state=Depends(ctx),
+) -> dict:
+    """Mono abs-peak per bin over the file or a window of it (the region
+    editor zooms by asking for a narrower window)."""
     sample = state.repo.get_sample(sample_id)
     y, sr = load_audio(sample.path)
     mono = np.abs(to_mono(y))
     n = mono.shape[0]
+    duration = n / sr if sr else 0.0
     if n == 0:
-        return {"bins": 0, "duration": 0.0, "peaks": []}
-    edges = np.linspace(0, n, bins + 1).astype(int)
-    out = [float(mono[a:b].max()) if b > a else 0.0 for a, b in zip(edges[:-1], edges[1:], strict=True)]
-    return {"bins": bins, "duration": n / sr, "peaks": out}
+        return {"bins": 0, "duration": 0.0, "start": 0.0, "end": 0.0, "peaks": []}
+    s0 = 0.0 if start is None else min(max(0.0, start), duration)
+    s1 = duration if end is None else min(max(s0, end), duration)
+    a0, a1 = int(round(s0 * sr)), int(round(s1 * sr))
+    seg = mono[a0:max(a0, a1)]
+    if seg.shape[0] == 0:
+        return {"bins": 0, "duration": duration, "start": s0, "end": s1, "peaks": []}
+    edges = np.linspace(0, seg.shape[0], bins + 1).astype(int)
+    out = [float(seg[a:b].max()) if b > a else 0.0 for a, b in zip(edges[:-1], edges[1:], strict=True)]
+    return {"bins": bins, "duration": duration, "start": s0, "end": s1, "peaks": out}
 
 
 @router.get("/samples/{sample_id}/audio")
-def sample_audio(sample_id: str, state=Depends(ctx)) -> FileResponse:
+def sample_audio(
+    sample_id: str,
+    start: float | None = Query(None, ge=0.0, description="slice start, seconds"),
+    end: float | None = Query(None, ge=0.0, description="slice end, seconds"),
+    state=Depends(ctx),
+):
+    """The whole source file, or a raw slice of it as float32 WAV (the region
+    editor auditions a draft selection before it is saved)."""
     sample = state.repo.get_sample(sample_id)
+    if start is not None or end is not None:
+        import soundfile as sf
+
+        y, sr = load_audio(sample.path)
+        duration = y.shape[1] / sr
+        s0 = 0.0 if start is None else min(max(0.0, start), duration)
+        s1 = duration if end is None else min(max(s0, end), duration)
+        if s1 <= s0:
+            raise HTTPException(400, "end must be after start")
+        seg = slice_seconds(y, sr, s0, s1)
+        buf = io.BytesIO()
+        sf.write(buf, seg.T, sr, format="WAV", subtype="FLOAT")
+        return Response(content=buf.getvalue(), media_type="audio/wav")
     path = Path(sample.path)
     if not path.exists():
         raise HTTPException(404, "source file missing")
@@ -132,8 +167,18 @@ def patch_region(region_id: str, body: RegionPatch, state=Depends(ctx)) -> Regio
         end = body.end_s if body.end_s is not None else region.end_s
         if end <= start:
             raise HTTPException(400, "end_s must be after start_s")
-        fields.update(start_s=start, end_s=end)
+        # Validate against the file before anything is written: a region that
+        # falls off the end would otherwise be committed and then fail to measure.
+        duration = state.repo.get_sample(region.sample_id).duration
+        if duration is not None and (start >= duration or end - max(0.0, start) < 0.05):
+            raise HTTPException(400, f"region must lie inside the file (0–{duration:.3f} s) and be at least 50 ms long")
+        fields.update(start_s=max(0.0, start), end_s=min(end, duration) if duration is not None else end)
         bounds_changed = True
+    if body.user_overrides is not None and body.user_overrides.snap_s is not None:
+        s0 = fields.get("start_s", region.start_s)
+        s1 = fields.get("end_s", region.end_s)
+        if not (s0 <= body.user_overrides.snap_s < s1):
+            raise HTTPException(400, "snap_s must lie inside the region")
     for k in ("chord_root", "chord_quality", "bass_note", "key_context"):
         v = getattr(body, k)
         if v is not None:

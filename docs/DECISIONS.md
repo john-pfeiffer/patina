@@ -193,3 +193,13 @@ after `tauri build` and calls `/health` on all three platforms.
   Preferences: the worker parks analysis jobs and keeps rendering and
   exporting. Duplicate detection stays by path; the hash is stored for the
   render cache, and two copies of one file are two samples on purpose.
+- **The region editor edits the region, and the region becomes the user's.**
+  Trimming a region or moving its transient in the editor (opened from a
+  library row or from the slot that plays it) writes the region itself, so
+  every set and slot using it follows; the alternative, a per-slot trim, would
+  have meant a second render variant per region. The snap point is stored as
+  `user_overrides.snap_s` (absolute seconds), which the temporal layer takes
+  over the detected first onset and which is part of the render cache key
+  through the overrides. "Save as new" keeps the original and adds the draft as
+  a user region (assigned to the slot when opened from one). Any edited region
+  is marked `source: user` and a rescan never re-cuts it.

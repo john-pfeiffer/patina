@@ -26,6 +26,8 @@ export type TempoFeel = 'quarter' | 'eighth' | 'half';
 
 export interface UserOverrides {
   keep_preroll: boolean;
+  /** Snap point chosen in the region editor (absolute seconds); null = detected first onset. */
+  snap_s: number | null;
   nudge_ms: number;
   warp_markers: WarpMarker[];
   warp_strength: number | null;
@@ -75,6 +77,11 @@ export interface Pattern {
 }
 
 export type RegionSource = 'analysis' | 'user';
+
+/** Note names the sidecar reports (sharps). */
+export const NOTE_NAMES: readonly string[] = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+/** Qualities a region can carry: the analyser's eight plus the bare root. */
+export const ANALYSIS_QUALITIES_UI: readonly string[] = ['maj', 'min', '7', 'm7', 'maj7', 'dim', 'sus2', 'sus4', '5'];
 
 export interface Region {
   id: string;
@@ -377,7 +384,11 @@ export interface SidecarInfo {
 
 export interface Peaks {
   bins: number;
+  /** Whole-file duration, seconds. */
   duration: number;
+  /** Window the peaks cover. */
+  start: number;
+  end: number;
   peaks: number[];
 }
 

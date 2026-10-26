@@ -18,6 +18,7 @@ interface SlotRowProps {
 export function SlotRow({ slot, region, sampleName, render, lastGood, selected, playing }: SlotRowProps) {
   const patchSlot = useStore((s) => s.patchSlot);
   const setUi = useStore((s) => s.setUi);
+  const openEditor = useStore((s) => s.openEditor);
   const regionSymbol = region ? (chordSymbol(region.chord_root, region.chord_quality, region.bass_note) ?? '?') : null;
   const select = () => setUi({ selectedSlotId: selected ? null : slot.id });
   return (
@@ -54,6 +55,9 @@ export function SlotRow({ slot, region, sampleName, render, lastGood, selected, 
           title={selected ? 'close the candidate drawer' : 'open the candidate drawer for this slot'}
         >
           {selected ? 'close' : region ? 'change…' : 'candidates…'}
+        </button>
+        <button type="button" disabled={!region} onClick={() => region && openEditor(region.id, slot.id)} title="edit this slot's region: trim, move the transient, audition in context">
+          edit
         </button>
         <span className="spacer" />
         <label className="check" title="locked slots are untouched by Reroll">

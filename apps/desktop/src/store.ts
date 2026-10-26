@@ -17,6 +17,7 @@ import type {
   ProgressionCreate,
   ProgressionPatch,
   Region,
+  RegionCreate,
   RegionPatch,
   RenderStatus,
   Sample,
@@ -62,7 +63,13 @@ export interface TransportState {
   sinkId?: string | null;
 }
 
-export type DialogName = 'preferences';
+export type DialogName = 'preferences' | 'region';
+
+export interface RegionEditorTarget {
+  regionId: string;
+  /** Slot the editor was opened from, for in-context audition and assigning a new region. */
+  slotId: string | null;
+}
 export type PrefsTab = 'audio' | 'library' | 'analysis' | 'appearance';
 
 export interface UiState {
@@ -80,6 +87,8 @@ export interface UiState {
   audioSinkId: string | null;
   /** Reroll and the candidate drawer never put two slots on the same source sample. */
   uniqueSamples: boolean;
+  /** Region open in the editor dialog (dialog === 'region'). */
+  editor: RegionEditorTarget | null;
   /** Library pane filter: name, folder, chord, key. */
   libraryFilter: string;
   /** Collapsed folders of the library tree, by `LibraryFolder.key`. */
@@ -132,6 +141,9 @@ export interface PatineState {
   reanalyze: (id: string) => Promise<void>;
   reanalyzeAll: () => Promise<void>;
   patchRegion: (id: string, patch: RegionPatch) => Promise<void>;
+  /** Save a draft selection as a new user region on the sample; returns it (null on failure). */
+  createRegion: (sampleId: string, body: RegionCreate) => Promise<Region | null>;
+  openEditor: (regionId: string, slotId?: string | null) => void;
 
   refreshRoots: () => Promise<void>;
   addRoot: (path: string, name?: string) => Promise<void>;
@@ -373,6 +385,7 @@ export const useStore = create<PatineState>()((set, get) => {
       prefsTab: 'audio',
       audioSinkId: prefs.audioSinkId ?? null,
       uniqueSamples: prefs.uniqueSamples ?? false,
+      editor: null,
       libraryFilter: '',
       collapsedFolders: {},
     },
@@ -493,6 +506,19 @@ export const useStore = create<PatineState>()((set, get) => {
           await Promise.all([get().refreshSet(get().currentSetId ?? ''), get().refreshDeltas()]);
         }
       }),
+
+    createRegion: async (sampleId, body) => {
+      try {
+        const region = await api.samples.createRegion(sampleId, body);
+        set((s) => ({ samples: replaceRegion(s.samples, region), candidates: {} }));
+        return region;
+      } catch (e) {
+        set({ lastError: errorMessage(e) });
+        return null;
+      }
+    },
+
+    openEditor: (regionId, slotId = null) => set((s) => ({ ui: { ...s.ui, dialog: 'region', editor: { regionId, slotId } } })),
 
     // --- sets ------------------------------------------------------------------------
 

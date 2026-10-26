@@ -41,6 +41,9 @@ class UserOverrides(BaseModel):
     """Handoff §3 `user_overrides`, §6 per-region bypass, §7 per-region temporal."""
 
     keep_preroll: bool = False            # §7.2 — play from region start, not first onset
+    # Snap point chosen by hand in the region editor (absolute seconds inside
+    # the file); overrides the detected first onset when inside the region.
+    snap_s: float | None = None
     nudge_ms: float = 0.0                 # §7.2
     warp_markers: list[WarpMarker] = Field(default_factory=list)  # §7.3 tier 1
     warp_strength: float | None = None    # §7.4 per-region override, 0–100

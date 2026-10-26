@@ -69,8 +69,13 @@ class RegionTempo:
 
 
 def snap_point(region: Region, *, transient_snap: bool = True) -> float:
-    """§7.2: where playback and the grid begin in the source, before nudge."""
+    """§7.2: where playback and the grid begin in the source, before nudge. A
+    snap point set by hand (`user_overrides.snap_s`) wins over the detected
+    first onset; `keep_preroll` and a disabled transient snap fall back to the
+    region start."""
     ov = region.user_overrides
+    if ov.snap_s is not None and region.start_s <= ov.snap_s < region.end_s - MIN_REGION_S:
+        return float(ov.snap_s)
     onset = region.first_onset_s
     if transient_snap and not ov.keep_preroll and onset is not None:
         if region.start_s <= onset < region.end_s - MIN_REGION_S:

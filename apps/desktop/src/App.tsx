@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { Splitter } from './components/Splitter';
 import { LibraryPane } from './panes/LibraryPane';
 import { PreferencesDialog } from './panes/PreferencesDialog';
+import { RegionEditor } from './panes/RegionEditor';
 import { ProgressionPane } from './panes/ProgressionPane';
 import { SetPane } from './panes/SetPane';
 import { TransportPane } from './panes/TransportPane';
@@ -76,6 +77,7 @@ export function App() {
       </div>
       <TransportPane />
       {dialog === 'preferences' && <PreferencesDialog />}
+      {dialog === 'region' && <RegionEditor />}
     </div>
   );
 }

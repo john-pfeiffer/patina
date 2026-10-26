@@ -3,6 +3,7 @@ regions are never re-cut, stale analyses are re-queued."""
 
 from __future__ import annotations
 
+import pytest
 from conftest import synth_chords
 
 from patine import ANALYSIS_VERSION
@@ -89,3 +90,57 @@ def test_patching_an_analysis_region_makes_it_the_users(app_client, tmp_data_dir
     out = repo.replace_analysis_regions(sample.id, [_region(0.4, 2.0, "A", "min")])
     assert out == []
     assert repo.get_region(region.id).chord_root == "C"
+
+
+def test_region_editor_endpoints(app_client, tmp_data_dir):
+    """Windowed peaks and audio slices, snap_s round trip, bounds validation."""
+    from patine.conform.renderer import RenderRequest, cache_key
+    from patine.models import Region, UserOverrides
+    from patine.temporal.grid import snap_point
+
+    state = app_client.state_obj
+    repo = state.repo
+    path, total = synth_chords(tmp_data_dir / "e.wav", chords=((0, "maj"),), beats_per_chord=4)
+    sample = repo.insert_sample(str(path), "h", total, 22050, 2)
+    repo.update_sample(sample.id, analysis_status="done", analysis_version=ANALYSIS_VERSION, duration=total,
+                       beats=[0.0, 0.5, 1.0, 1.5], onsets=[0.0, 0.5, 1.0, 1.5])
+    (region,) = repo.replace_analysis_regions(sample.id, [_region(0.0, 2.0)])
+
+    whole = app_client.get(f"/samples/{sample.id}/peaks", params={"bins": 100}).json()
+    assert whole["bins"] == 100 and whole["start"] == 0.0 and whole["end"] == pytest.approx(total, abs=1e-3)
+    win = app_client.get(f"/samples/{sample.id}/peaks", params={"bins": 50, "start": 0.5, "end": 1.0}).json()
+    assert win["bins"] == 50 and win["start"] == 0.5 and win["end"] == 1.0 and len(win["peaks"]) == 50
+    assert max(win["peaks"]) > 0.1
+
+    audio = app_client.get(f"/samples/{sample.id}/audio", params={"start": 0.25, "end": 0.75})
+    assert audio.status_code == 200 and audio.headers["content-type"].startswith("audio/wav")
+    import io
+
+    import soundfile as sf
+    y, sr = sf.read(io.BytesIO(audio.content), dtype="float32", always_2d=True)
+    assert sr == 22050 and abs(y.shape[0] - 0.5 * sr) <= 2
+    assert app_client.get(f"/samples/{sample.id}/audio", params={"start": 1.0, "end": 0.5}).status_code == 400
+
+    # snap_s is honoured by the snap point, changes the render key, must lie inside the region
+    base = app_client.get(f"/regions/{region.id}").json()
+    ov = {**base["user_overrides"], "snap_s": 1.0}
+    patched = app_client.patch(f"/regions/{region.id}", json={"user_overrides": ov}).json()
+    assert patched["user_overrides"]["snap_s"] == 1.0 and patched["source"] == "user"
+    r_before = Region.model_validate(base)
+    r_after = Region.model_validate(patched)
+    assert snap_point(r_before) == 0.0 and snap_point(r_after) == 1.0
+    assert snap_point(Region.model_validate({**patched, "user_overrides": {**ov, "keep_preroll": True}})) == 1.0
+    from patine.models import TemporalSettings, TonalSettings
+
+    req = lambda r: RenderRequest(  # noqa: E731
+        region=r, sample_path=str(path), sample_hash="h", sample_tuning_cents=0.0, sample_bpm=120.0,
+        sample_bpm_confidence=0.9, sample_beats=[0.0, 0.5, 1.0, 1.5], anchor=None, tonal=TonalSettings(),
+        temporal=TemporalSettings(), session_bpm=120.0,
+    )
+    assert cache_key(req(r_before)) != cache_key(req(r_after))
+    assert app_client.patch(f"/regions/{region.id}", json={"user_overrides": {**ov, "snap_s": 5.0}}).status_code == 400
+    # bounds are validated against the file before anything is written
+    assert app_client.patch(f"/regions/{region.id}", json={"start_s": total + 1.0, "end_s": total + 2.0}).status_code == 400
+    assert app_client.get(f"/regions/{region.id}").json()["start_s"] == 0.0
+    assert app_client.patch(f"/regions/{region.id}", json={"end_s": total + 5.0}).json()["end_s"] == pytest.approx(total, abs=1e-6)
+    assert isinstance(UserOverrides().snap_s, type(None))
