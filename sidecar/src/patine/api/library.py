@@ -45,6 +45,16 @@ def delete_sample(sample_id: str, state=Depends(ctx)) -> Response:
     return Response(status_code=204)
 
 
+@router.post("/samples/reanalyze", response_model=list[Job])
+def reanalyze_all(state=Depends(ctx)) -> list[Job]:
+    """Queue every analysed (or failed) sample again, behind fresh work."""
+    jobs = []
+    for s in state.repo.list_samples():
+        if s.analysis_status in ("done", "failed"):
+            jobs.append(services.queue_analysis(state, s.id, priority=9))
+    return jobs
+
+
 @router.post("/samples/{sample_id}/reanalyze", response_model=Job)
 def reanalyze(sample_id: str, state=Depends(ctx)) -> Job:
     state.repo.get_sample(sample_id)

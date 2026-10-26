@@ -151,6 +151,12 @@ class Sample(BaseModel):
     path: str
     hash: str
     name: str
+    # Where the file came from: a scanned library root and the path inside it;
+    # None for files added one by one.
+    root_id: str | None = None
+    rel_path: str | None = None
+    mtime: float | None = None
+    size: int | None = None
     duration: float | None = None
     sample_rate: int | None = None
     channels: int | None = None
@@ -164,11 +170,48 @@ class Sample(BaseModel):
     key_estimate: str | None = None
     key_confidence: float | None = None
     metrics: TonalMetrics | None = None
-    analysis_status: Literal["pending", "running", "done", "failed"] = "pending"
+    # `missing`: the file was not found at the last scan of its root.
+    analysis_status: Literal["pending", "running", "done", "failed", "missing"] = "pending"
     analysis_error: str | None = None
     analysis_version: int | None = None
     analysis_progress: float = 0.0
     regions: list[Region] = Field(default_factory=list)
+
+
+class LibraryRoot(BaseModel):
+    """A folder the library scans recursively (a Splice library, a sample pack folder)."""
+
+    id: str
+    path: str
+    name: str
+    added_at: str
+    last_scan_at: str | None = None
+    status: Literal["idle", "scanning", "error"] = "idle"
+    file_count: int = 0
+    error: str | None = None
+
+
+class LibraryRootCreate(BaseModel):
+    path: str
+    name: str | None = None
+
+
+class Settings(BaseModel):
+    """Sidecar settings (stored in the `settings` table, one JSON value per key)."""
+
+    analysis_paused: bool = False        # park analysis jobs; renders and exports keep running
+    analysis_hpss: bool = True           # chord chroma from the harmonic part of the CQT
+    analysis_window_beats: float = 1.0   # observation window for the chord HMM (0 = off)
+    analysis_fallback: bool = True       # whole-span fallback when nothing decodes
+    scan_on_startup: bool = True         # rescan every root when the sidecar starts
+
+
+class SettingsPatch(BaseModel):
+    analysis_paused: bool | None = None
+    analysis_hpss: bool | None = None
+    analysis_window_beats: float | None = None
+    analysis_fallback: bool | None = None
+    scan_on_startup: bool | None = None
 
 
 class SetMember(BaseModel):

@@ -61,7 +61,11 @@ queue processes members in playback order, shortest first.
 
 ## Data
 
-SQLite at `<data dir>/library.sqlite3` (WAL). Renders at `<data dir>/renders/`.
+SQLite at `<data dir>/library.sqlite3` (WAL): samples, regions, sets,
+progressions, renders, jobs, plus `library_roots` (folders scanned
+recursively; a sample remembers its root, relative path, size and mtime) and
+`settings` (key/value JSON: analysis options, the analysis pause, scan on
+startup). Renders at `<data dir>/renders/`.
 Model weights at `<data dir>/models/` (fetched on first use, never bundled).
 Data dir: macOS `~/Library/Application Support/Patine`, Windows `%APPDATA%\Patine`,
 Linux `~/.local/share/patine`; `--dev` uses `<repo>/.patine-dev`.

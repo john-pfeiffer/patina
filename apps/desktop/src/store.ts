@@ -12,6 +12,7 @@ import type {
   ConformSet,
   ExportKind,
   Job,
+  LibraryRoot,
   Progression,
   ProgressionCreate,
   ProgressionPatch,
@@ -20,6 +21,8 @@ import type {
   RenderStatus,
   Sample,
   SetPatch,
+  Settings,
+  SettingsPatch,
   SidecarEventMap,
   SidecarEventName,
   SidecarInfo,
@@ -77,6 +80,10 @@ export interface UiState {
   audioSinkId: string | null;
   /** Reroll and the candidate drawer never put two slots on the same source sample. */
   uniqueSamples: boolean;
+  /** Library pane filter: name, folder, chord, key. */
+  libraryFilter: string;
+  /** Collapsed folders of the library tree, by `LibraryFolder.key`. */
+  collapsedFolders: Record<string, true>;
 }
 
 export interface PendingAudition {
@@ -87,6 +94,10 @@ export interface PendingAudition {
 export interface PatineState {
   connection: ConnectionState;
   samples: Sample[];
+  /** Folders the library scans (Preferences › Library). */
+  roots: LibraryRoot[];
+  /** Sidecar settings; null until loaded. */
+  settings: Settings | null;
   sets: ConformSet[];
   currentSetId: string | null;
   progressions: Progression[];
@@ -119,7 +130,16 @@ export interface PatineState {
   ingest: (paths: string[]) => Promise<void>;
   removeSample: (id: string) => Promise<void>;
   reanalyze: (id: string) => Promise<void>;
+  reanalyzeAll: () => Promise<void>;
   patchRegion: (id: string, patch: RegionPatch) => Promise<void>;
+
+  refreshRoots: () => Promise<void>;
+  addRoot: (path: string, name?: string) => Promise<void>;
+  scanRoot: (id: string) => Promise<void>;
+  scanAllRoots: () => Promise<void>;
+  removeRoot: (id: string, deleteSamples: boolean) => Promise<void>;
+  refreshSettings: () => Promise<void>;
+  patchSettings: (patch: SettingsPatch) => Promise<void>;
 
   refreshSets: () => Promise<void>;
   refreshSet: (id: string) => Promise<void>;
@@ -184,6 +204,7 @@ export const selectAnchorRegion = (s: PatineState): Region | null => {
 };
 
 export interface QueueCounts {
+  scanActive: number;
   analyzeQueued: number;
   analyzeRunning: number;
   renderQueued: number;
@@ -192,9 +213,10 @@ export interface QueueCounts {
 }
 
 export const selectQueueCounts = (jobs: Record<string, Job>): QueueCounts => {
-  const c: QueueCounts = { analyzeQueued: 0, analyzeRunning: 0, renderQueued: 0, renderRunning: 0, exportActive: 0 };
+  const c: QueueCounts = { scanActive: 0, analyzeQueued: 0, analyzeRunning: 0, renderQueued: 0, renderRunning: 0, exportActive: 0 };
   for (const j of Object.values(jobs)) {
-    if (j.kind === 'analyze') {
+    if (j.kind === 'scan' && (j.status === 'queued' || j.status === 'running')) c.scanActive++;
+    else if (j.kind === 'analyze') {
       if (j.status === 'queued') c.analyzeQueued++;
       else if (j.status === 'running') c.analyzeRunning++;
     } else if (j.kind === 'render') {
@@ -324,6 +346,8 @@ export const useStore = create<PatineState>()((set, get) => {
   return {
     connection: { status: 'starting', url: null, info: null, error: null, sse: 'closed' },
     samples: [],
+    roots: [],
+    settings: null,
     sets: [],
     currentSetId: prefs.currentSetId ?? null,
     progressions: [],
@@ -349,6 +373,8 @@ export const useStore = create<PatineState>()((set, get) => {
       prefsTab: 'audio',
       audioSinkId: prefs.audioSinkId ?? null,
       uniqueSamples: prefs.uniqueSamples ?? false,
+      libraryFilter: '',
+      collapsedFolders: {},
     },
     lastError: null,
 
@@ -362,8 +388,14 @@ export const useStore = create<PatineState>()((set, get) => {
 
     loadAll: () =>
       run(async () => {
-        const [samples, sets, jobs] = await Promise.all([api.samples.list(), api.sets.list(), api.jobs.list()]);
-        set({ samples, sets, jobs: Object.fromEntries(jobs.map((j) => [j.id, j])) });
+        const [samples, sets, jobs, roots, settings] = await Promise.all([
+          api.samples.list(),
+          api.sets.list(),
+          api.jobs.list(),
+          api.roots.list(),
+          api.settings.get(),
+        ]);
+        set({ samples, sets, roots, settings, jobs: Object.fromEntries(jobs.map((j) => [j.id, j])) });
         const wanted = get().currentSetId;
         const setId = sets.some((x) => x.id === wanted) ? wanted : (sets[0]?.id ?? null);
         await get().selectSet(setId);
@@ -403,6 +435,54 @@ export const useStore = create<PatineState>()((set, get) => {
       run(async () => {
         const job = await api.samples.reanalyze(id);
         set((s) => ({ jobs: { ...s.jobs, [job.id]: job } }));
+      }),
+
+    reanalyzeAll: () =>
+      run(async () => {
+        const jobs = await api.samples.reanalyzeAll();
+        set((s) => ({ jobs: pruneJobs({ ...s.jobs, ...Object.fromEntries(jobs.map((j) => [j.id, j])) }) }));
+      }),
+
+    // --- library roots & settings --------------------------------------------------
+
+    refreshRoots: () =>
+      run(async () => {
+        set({ roots: await api.roots.list() });
+      }),
+
+    addRoot: (path, name) =>
+      run(async () => {
+        const { root, job } = await api.roots.add({ path, name });
+        set((s) => ({ roots: replaceById(s.roots, root), jobs: { ...s.jobs, [job.id]: job } }));
+      }),
+
+    scanRoot: (id) =>
+      run(async () => {
+        const job = await api.roots.scan(id);
+        set((s) => ({ jobs: { ...s.jobs, [job.id]: job } }));
+      }),
+
+    scanAllRoots: () =>
+      run(async () => {
+        const jobs = await api.roots.scanAll();
+        set((s) => ({ jobs: { ...s.jobs, ...Object.fromEntries(jobs.map((j) => [j.id, j])) } }));
+      }),
+
+    removeRoot: (id, deleteSamples) =>
+      run(async () => {
+        await api.roots.remove(id, deleteSamples);
+        set((s) => ({ roots: s.roots.filter((r) => r.id !== id) }));
+        await get().loadAll();
+      }),
+
+    refreshSettings: () =>
+      run(async () => {
+        set({ settings: await api.settings.get() });
+      }),
+
+    patchSettings: (patch) =>
+      run(async () => {
+        set({ settings: await api.settings.patch(patch) });
       }),
 
     patchRegion: (id, patch) =>
@@ -773,6 +853,27 @@ export const useStore = create<PatineState>()((set, get) => {
         case 'job.updated': {
           const job = data as SidecarEventMap['job.updated'];
           set((s) => ({ jobs: pruneJobs({ ...s.jobs, [job.id]: job }) }));
+          break;
+        }
+        case 'root.updated': {
+          const ev = data as SidecarEventMap['root.updated'];
+          if (ev.status === 'removed') {
+            set((s) => ({ roots: s.roots.filter((r) => r.id !== ev.root_id) }));
+            debounced('load-all', 300, () => void get().loadAll());
+            break;
+          }
+          set((s) => ({
+            roots: s.roots.map((r) =>
+              r.id === ev.root_id
+                ? { ...r, status: ev.status as LibraryRoot['status'], file_count: ev.file_count ?? r.file_count, error: ev.error ?? null, last_scan_at: ev.last_scan_at ?? r.last_scan_at }
+                : r,
+            ),
+          }));
+          if (!get().roots.some((r) => r.id === ev.root_id)) debounced('roots', 300, () => void get().refreshRoots());
+          break;
+        }
+        case 'settings.updated': {
+          set({ settings: data as SidecarEventMap['settings.updated'] });
           break;
         }
       }

@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
+import { isTauri, pickAudioFolder } from '../api/shell';
 import { canSelectOutput, engine, listOutputDevices, selectOutput, type OutputDevice } from '../audio/engine';
 import { Dialog } from '../components/Dialog';
-import { useStore, type PrefsTab } from '../store';
+import { NumberField } from '../components/NumberField';
+import { selectQueueCounts, useStore, type PrefsTab } from '../store';
 import { errorMessage } from '../util/format';
 
 const TABS: { id: PrefsTab; label: string }[] = [
@@ -188,6 +190,200 @@ export function AudioPrefs() {
   );
 }
 
+/** Scanned folders, their state, and the analysis queue with its pause. */
+export function LibraryPrefs() {
+  const roots = useStore((s) => s.roots);
+  const samples = useStore((s) => s.samples);
+  const settings = useStore((s) => s.settings);
+  const jobs = useStore((s) => s.jobs);
+  const addRoot = useStore((s) => s.addRoot);
+  const scanRoot = useStore((s) => s.scanRoot);
+  const scanAllRoots = useStore((s) => s.scanAllRoots);
+  const removeRoot = useStore((s) => s.removeRoot);
+  const patchSettings = useStore((s) => s.patchSettings);
+  const [manualPath, setManualPath] = useState('');
+  const counts = selectQueueCounts(jobs);
+  const perRoot = new Map<string, { total: number; analysed: number; missing: number; busy: number }>();
+  for (const s of samples) {
+    if (!s.root_id) continue;
+    const c = perRoot.get(s.root_id) ?? { total: 0, analysed: 0, missing: 0, busy: 0 };
+    c.total++;
+    if (s.analysis_status === 'done') c.analysed++;
+    else if (s.analysis_status === 'missing') c.missing++;
+    else if (s.analysis_status === 'pending' || s.analysis_status === 'running') c.busy++;
+    perRoot.set(s.root_id, c);
+  }
+  const loose = samples.filter((s) => !s.root_id).length;
+
+  const pick = () =>
+    void pickAudioFolder()
+      .then((dir) => (dir ? addRoot(dir) : undefined))
+      .catch((e: unknown) => useStore.setState({ lastError: errorMessage(e) }));
+
+  const remove = (id: string, name: string) => {
+    const del = window.confirm(`Remove “${name}” from the library?\n\nOK removes the folder and its samples.\nCancel keeps everything.`);
+    if (!del) return;
+    const keep = window.confirm('Keep the samples found under it as loose files?\n\nOK keeps them, Cancel deletes them from the library.');
+    void removeRoot(id, !keep);
+  };
+
+  return (
+    <div className="prefs-section">
+      <h3>Library folders</h3>
+      <p className="muted">
+        Each folder is scanned recursively; everything found is analysed in the background. Rescan picks up new, changed and
+        removed files. Hidden files and folders are skipped. Nothing is ever deleted from disk.
+      </p>
+      <div className="row">
+        {isTauri() ? (
+          <button type="button" onClick={pick}>
+            add folder…
+          </button>
+        ) : (
+          <>
+            <input type="text" placeholder="/abs/path/to/Splice" value={manualPath} style={{ width: 260 }} onChange={(e) => setManualPath(e.target.value)} />
+            <button type="button" disabled={!manualPath.trim()} onClick={() => void addRoot(manualPath.trim()).then(() => setManualPath(''))}>
+              add folder
+            </button>
+          </>
+        )}
+        <button type="button" disabled={roots.length === 0} onClick={() => void scanAllRoots()}>
+          rescan all
+        </button>
+        {counts.scanActive > 0 && <span className="badge badge-busy">{counts.scanActive} scanning</span>}
+      </div>
+      {roots.length === 0 ? (
+        <p className="muted">No folders yet. Add your Splice folder or any sample pack folder.</p>
+      ) : (
+        <table className="readouts roots">
+          <thead>
+            <tr>
+              <th>folder</th>
+              <th>files</th>
+              <th>analysed</th>
+              <th>state</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {roots.map((r) => {
+              const c = perRoot.get(r.id) ?? { total: 0, analysed: 0, missing: 0, busy: 0 };
+              return (
+                <tr key={r.id}>
+                  <td title={r.path}>
+                    <strong>{r.name}</strong>
+                    <div className="muted path">{r.path}</div>
+                  </td>
+                  <td>
+                    {c.total}
+                    {c.missing > 0 && <span className="warn"> · {c.missing} missing</span>}
+                  </td>
+                  <td>
+                    {c.analysed}/{c.total}
+                    {c.busy > 0 && <span className="muted"> · {c.busy} queued</span>}
+                  </td>
+                  <td>
+                    {r.status === 'scanning' ? (
+                      <span className="badge badge-busy">scanning</span>
+                    ) : r.status === 'error' ? (
+                      <span className="badge badge-bad" title={r.error ?? ''}>
+                        error
+                      </span>
+                    ) : (
+                      <span className="muted">{r.last_scan_at ? `scanned ${r.last_scan_at.slice(0, 16).replace('T', ' ')}` : 'not scanned'}</span>
+                    )}
+                  </td>
+                  <td className="hear">
+                    <button type="button" disabled={r.status === 'scanning'} onClick={() => void scanRoot(r.id)}>
+                      rescan
+                    </button>
+                    <button type="button" onClick={() => remove(r.id, r.name)} title="remove this folder from the library">
+                      remove…
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+      {loose > 0 && <p className="muted">{loose} file(s) were added one by one and belong to no folder.</p>}
+
+      <h3>Analysis queue</h3>
+      <div className="row">
+        <span className="readout">
+          {counts.analyzeRunning} running · {counts.analyzeQueued} queued
+        </span>
+        <label className="check" title="park analysis jobs; renders and exports keep running">
+          <input
+            type="checkbox"
+            checked={settings?.analysis_paused ?? false}
+            disabled={!settings}
+            onChange={(e) => void patchSettings({ analysis_paused: e.target.checked })}
+          />
+          pause analysis
+        </label>
+        <label className="check" title="rescan every folder when the engine starts">
+          <input
+            type="checkbox"
+            checked={settings?.scan_on_startup ?? true}
+            disabled={!settings}
+            onChange={(e) => void patchSettings({ scan_on_startup: e.target.checked })}
+          />
+          rescan on startup
+        </label>
+      </div>
+    </div>
+  );
+}
+
+/** Chord-detection options and a way to re-run everything. */
+export function AnalysisPrefs() {
+  const settings = useStore((s) => s.settings);
+  const samples = useStore((s) => s.samples);
+  const info = useStore((s) => s.connection.info);
+  const patchSettings = useStore((s) => s.patchSettings);
+  const reanalyzeAll = useStore((s) => s.reanalyzeAll);
+  const stale = info ? samples.filter((s) => s.analysis_status === 'done' && (s.analysis_version ?? 0) < info.analysis_version).length : 0;
+  if (!settings) return <p className="muted">loading settings…</p>;
+  return (
+    <div className="prefs-section">
+      <h3>Chord detection</h3>
+      <p className="muted">These apply to the next analysis of a file; use “re-analyse everything” to apply them to the library.</p>
+      <div className="row-col">
+        <label className="check" title="fold the chord chroma from the harmonic part of the spectrum, so drums and noise do not read as “no chord”">
+          <input type="checkbox" checked={settings.analysis_hpss} onChange={(e) => void patchSettings({ analysis_hpss: e.target.checked })} />
+          harmonic chroma (ignore drums and noise under the chords)
+        </label>
+        <label className="check" title="label the longest tonal span of a file that would otherwise come back with no chord, at low confidence">
+          <input type="checkbox" checked={settings.analysis_fallback} onChange={(e) => void patchSettings({ analysis_fallback: e.target.checked })} />
+          whole-file fallback (never drop a tonal sample)
+        </label>
+        <NumberField
+          label="observation window (beats)"
+          value={settings.analysis_window_beats}
+          min={0}
+          max={4}
+          step={0.5}
+          width={64}
+          onCommit={(v) => void patchSettings({ analysis_window_beats: Math.max(0, Math.min(4, v ?? 1)) })}
+        />
+        <span className="muted">how long the chord estimator listens before deciding; 1 beat lets arpeggios and melodies read as their chord, 0 decides per frame</span>
+      </div>
+      <h3>Re-analysis</h3>
+      <div className="row">
+        <button type="button" disabled={samples.length === 0} onClick={() => void reanalyzeAll()}>
+          re-analyse everything
+        </button>
+        <span className="muted">
+          queues every sample again at low priority; regions keep their ids, so sets and slots survive
+          {stale > 0 ? ` · ${stale} sample(s) still carry an older analysis` : ''}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function Placeholder({ what }: { what: string }) {
   return <p className="muted">{what} settings arrive in a later update.</p>;
 }
@@ -208,8 +404,8 @@ export function PreferencesDialog() {
         </nav>
         <div className="prefs-page">
           {tab === 'audio' && <AudioPrefs />}
-          {tab === 'library' && <Placeholder what="Library" />}
-          {tab === 'analysis' && <Placeholder what="Analysis" />}
+          {tab === 'library' && <LibraryPrefs />}
+          {tab === 'analysis' && <AnalysisPrefs />}
           {tab === 'appearance' && <Placeholder what="Appearance" />}
         </div>
       </div>

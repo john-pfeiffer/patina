@@ -11,6 +11,8 @@ import type {
   IngestResponse,
   Job,
   JobStatus,
+  LibraryRoot,
+  LibraryRootCreate,
   MemberAdd,
   ParseRequest,
   ParseResponse,
@@ -28,6 +30,8 @@ import type {
   Sample,
   SetCreate,
   SetPatch,
+  Settings,
+  SettingsPatch,
   SidecarInfo,
   Slot,
   SlotPatch,
@@ -128,9 +132,24 @@ export const api = {
     get: (id: string) => request<Sample>('GET', `/samples/${id}`),
     remove: (id: string) => request<void>('DELETE', `/samples/${id}`),
     reanalyze: (id: string) => request<Job>('POST', `/samples/${id}/reanalyze`),
+    reanalyzeAll: () => request<Job[]>('POST', '/samples/reanalyze'),
     peaks: (id: string, bins = 800) => request<Peaks>('GET', `/samples/${id}/peaks${q({ bins })}`),
     audioPath: (id: string) => `/samples/${id}/audio`,
     createRegion: (id: string, body: RegionCreate) => request<Region>('POST', `/samples/${id}/regions`, body),
+  },
+
+  roots: {
+    list: () => request<LibraryRoot[]>('GET', '/roots'),
+    add: (body: LibraryRootCreate) => request<{ root: LibraryRoot; job: Job }>('POST', '/roots', body),
+    scan: (id: string) => request<Job>('POST', `/roots/${id}/scan`),
+    scanAll: () => request<Job[]>('POST', '/roots/scan'),
+    remove: (id: string, deleteSamples: boolean) =>
+      request<void>('DELETE', `/roots/${id}${q({ delete_samples: deleteSamples ? 'true' : undefined })}`),
+  },
+
+  settings: {
+    get: () => request<Settings>('GET', '/settings'),
+    patch: (body: SettingsPatch) => request<Settings>('PATCH', '/settings', body),
   },
 
   regions: {

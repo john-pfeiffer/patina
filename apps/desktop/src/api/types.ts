@@ -97,13 +97,19 @@ export interface Region {
   source: RegionSource;
 }
 
-export type AnalysisStatus = 'pending' | 'running' | 'done' | 'failed';
+/** `missing`: the file was not found at the last scan of its root. */
+export type AnalysisStatus = 'pending' | 'running' | 'done' | 'failed' | 'missing';
 
 export interface Sample {
   id: string;
   path: string;
   hash: string;
   name: string;
+  /** Scanned library root this file came from, and its path inside it; null for files added one by one. */
+  root_id: string | null;
+  rel_path: string | null;
+  mtime: number | null;
+  size: number | null;
   duration: number | null;
   sample_rate: number | null;
   channels: number | null;
@@ -384,6 +390,47 @@ export interface SampleUpdatedEvent {
   message: string | null;
 }
 
+export type RootStatus = 'idle' | 'scanning' | 'error';
+
+/** A folder the library scans recursively (a Splice library, a pack folder). */
+export interface LibraryRoot {
+  id: string;
+  path: string;
+  name: string;
+  added_at: string;
+  last_scan_at: string | null;
+  status: RootStatus;
+  file_count: number;
+  error: string | null;
+}
+
+export interface LibraryRootCreate {
+  path: string;
+  name?: string;
+}
+
+export interface Settings {
+  analysis_paused: boolean;
+  analysis_hpss: boolean;
+  analysis_window_beats: number;
+  analysis_fallback: boolean;
+  scan_on_startup: boolean;
+}
+
+export type SettingsPatch = Partial<Settings>;
+
+export interface RootUpdatedEvent {
+  root_id: string;
+  status: RootStatus | 'removed';
+  file_count?: number;
+  error?: string | null;
+  last_scan_at?: string | null;
+  message?: string;
+  scanned?: number | null;
+  total?: number | null;
+  removed_samples?: number;
+}
+
 export interface SampleRemovedEvent {
   sample_id: string;
 }
@@ -404,6 +451,8 @@ export interface SidecarEventMap {
   'set.updated': SetUpdatedEvent;
   'render.updated': RenderStatus;
   'job.updated': Job;
+  'root.updated': RootUpdatedEvent;
+  'settings.updated': Settings;
 }
 
 export type SidecarEventName = keyof SidecarEventMap;
@@ -414,4 +463,6 @@ export const SIDECAR_EVENT_NAMES: readonly SidecarEventName[] = [
   'set.updated',
   'render.updated',
   'job.updated',
+  'root.updated',
+  'settings.updated',
 ];

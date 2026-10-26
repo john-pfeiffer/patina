@@ -30,6 +30,8 @@ SSE events (`event:` name, `data:` JSON):
 - `set.updated` → `{set_id}` (anchor, settings, membership or bpm changed; renders may be stale)
 - `render.updated` → `RenderStatus`
 - `job.updated` → `Job`
+- `root.updated` → `{root_id, status, file_count, error, last_scan_at, message, scanned, total}` while a root scans; `status: removed` when it is deleted
+- `settings.updated` → `Settings`
 - `ping` every 15 s
 
 ## Library (§5.1)
@@ -41,6 +43,28 @@ SSE events (`event:` name, `data:` JSON):
 | GET | `/samples/{id}` | → `Sample` |
 | DELETE | `/samples/{id}` | → 204 |
 | POST | `/samples/{id}/reanalyze` | → `Job` (§4: re-runs only on explicit request; the sidecar also re-queues samples analysed by an older `analysis_version` at startup). A re-run keeps the ids of regions that overlap the old ones (IoU ≥ 0.5), so set membership, the anchor and slot assignments survive; `source: user` regions are never touched. |
+| POST | `/samples/reanalyze` | → `Job[]`: every analysed or failed sample queued again at low priority |
+
+## Library roots and settings
+
+A root is a folder the library scans recursively (a Splice library, a pack
+folder). Hidden files and folders and macOS `._` sidecars are skipped. A scan
+adds new files (queued for analysis at low priority), re-queues files whose
+size or modification time changed, marks files that vanished `missing` and
+clears the mark when they come back; it never deletes. `Sample` carries
+`root_id`, `rel_path`, `mtime` and `size` for files that came from a root.
+
+| Method | Path | Body → Response |
+|---|---|---|
+| GET | `/roots` | → `LibraryRoot[]` |
+| POST | `/roots` | `LibraryRootCreate {path, name?}` → `{root, job}`; the same folder again returns the existing root and a new scan |
+| GET | `/roots/{id}` | → `LibraryRoot` |
+| POST | `/roots/{id}/scan` | → `Job` (kind `scan`; result `{added, changed, missing, unchanged, files}`) |
+| POST | `/roots/scan` | → `Job[]`, every root |
+| DELETE | `/roots/{id}?delete_samples=false` | → 204. With `delete_samples=true` the samples found under it go too; otherwise they stay as loose files |
+| GET | `/settings` | → `Settings {analysis_paused, analysis_hpss, analysis_window_beats, analysis_fallback, scan_on_startup}` |
+| PATCH | `/settings` | `SettingsPatch` → `Settings`. `analysis_paused` parks analysis jobs (renders and exports keep running); the analysis options apply to the next analysis |
+
 | GET | `/samples/{id}/peaks?bins=800` | → `{bins, duration, peaks: number[]}` mono abs-peak per bin, 0..1 |
 | GET | `/samples/{id}/audio` | → `audio/wav` whole source file |
 | POST | `/samples/{id}/regions` | `RegionCreate` → `Region` (user region; measured immediately) |
@@ -100,7 +124,7 @@ SSE events (`event:` name, `data:` JSON):
 | GET | `/jobs/{id}` | → `Job` |
 | POST | `/jobs/{id}/cancel` | → `Job` |
 
-Job kinds: `analyze` (payload `{sample_id}`), `render` (`{cache_key}`), `export`.
+Job kinds: `scan` (payload `{root_id}`), `analyze` (`{sample_id}`), `render` (`{cache_key}`), `export`.
 
 ## Errors
 

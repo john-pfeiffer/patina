@@ -149,6 +149,11 @@ export function TransportPane() {
           prefs…
         </button>
         <span className="spacer" />
+        {counts.scanActive > 0 && (
+          <span className="badge badge-busy" title="library folders being scanned">
+            scanning {counts.scanActive}
+          </span>
+        )}
         <span className="readout" title="analysis queue">
           analyse {counts.analyzeRunning} running · {counts.analyzeQueued} queued
         </span>

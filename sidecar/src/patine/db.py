@@ -13,14 +13,34 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS library_roots (
+  id            TEXT PRIMARY KEY,
+  path          TEXT NOT NULL UNIQUE,
+  name          TEXT NOT NULL,
+  added_at      TEXT NOT NULL,
+  last_scan_at  TEXT,
+  status        TEXT NOT NULL DEFAULT 'idle',   -- idle | scanning | error
+  file_count    INTEGER NOT NULL DEFAULT 0,
+  error         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key    TEXT PRIMARY KEY,
+  value  TEXT NOT NULL                          -- JSON
+);
+
 CREATE TABLE IF NOT EXISTS samples (
   id               TEXT PRIMARY KEY,
   path             TEXT NOT NULL UNIQUE,
   hash             TEXT NOT NULL,
   name             TEXT NOT NULL,
+  root_id          TEXT REFERENCES library_roots(id) ON DELETE SET NULL,  -- v3
+  rel_path         TEXT,            -- path relative to the root, v3
+  mtime            REAL,            -- file modification time at the last scan, v3
+  size             INTEGER,         -- file size at the last scan, v3
   duration         REAL,
   sample_rate      INTEGER,
   channels         INTEGER,
@@ -34,7 +54,7 @@ CREATE TABLE IF NOT EXISTS samples (
   key_estimate     TEXT,
   key_confidence   REAL,
   metrics          TEXT,            -- JSON TonalMetrics measured over the whole file
-  analysis_status  TEXT NOT NULL DEFAULT 'pending',   -- pending | running | done | failed
+  analysis_status  TEXT NOT NULL DEFAULT 'pending',   -- pending | running | done | failed | missing
   analysis_error   TEXT,
   analysis_version INTEGER,
   analysis_progress REAL NOT NULL DEFAULT 0
@@ -198,6 +218,21 @@ class Database:
             # transient edited without re-running the file.
             conn.execute("ALTER TABLE samples ADD COLUMN onsets TEXT")
             conn.execute("PRAGMA user_version = 2")
+            conn.commit()
+        if version < 3:
+            # Library roots (scanned folders), settings, and where a sample came from.
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS library_roots (
+                  id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, name TEXT NOT NULL, added_at TEXT NOT NULL,
+                  last_scan_at TEXT, status TEXT NOT NULL DEFAULT 'idle', file_count INTEGER NOT NULL DEFAULT 0, error TEXT
+                );
+                CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                ALTER TABLE samples ADD COLUMN root_id TEXT REFERENCES library_roots(id) ON DELETE SET NULL;
+                ALTER TABLE samples ADD COLUMN rel_path TEXT;
+                ALTER TABLE samples ADD COLUMN mtime REAL;
+                ALTER TABLE samples ADD COLUMN size INTEGER;
+            """)
+            conn.execute("PRAGMA user_version = 3")
             conn.commit()
         # Future migrations go here, each guarded by `if version < N:`.
 

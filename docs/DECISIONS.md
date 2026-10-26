@@ -182,3 +182,14 @@ after `tauri build` and calls `/health` on all three platforms.
   user has edited becomes `source: user` and is never re-cut. Whole-file
   onsets are now stored on the sample (schema v2) so a region can be
   re-measured and its transient edited without re-running the file.
+- **Library roots scan; they never delete.** A root is a folder (a Splice
+  library) the sidecar walks recursively, skipping dot files and folders and
+  macOS `._` sidecars. New files are indexed and analysed in the background at
+  low priority; files whose size or mtime changed are re-analysed; files that
+  vanished are marked `missing` and un-marked when they return. Removing a
+  root keeps its samples as loose files unless asked to delete them, and
+  re-adding the folder re-adopts them. Every root is rescanned when the
+  sidecar starts (`scan_on_startup`). Analysis can be paused from
+  Preferences: the worker parks analysis jobs and keeps rendering and
+  exporting. Duplicate detection stays by path; the hash is stored for the
+  render cache, and two copies of one file are two samples on purpose.
