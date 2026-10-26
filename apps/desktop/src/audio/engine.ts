@@ -8,6 +8,7 @@
 import * as Tone from 'tone';
 import { fetchAudio } from '../api/client';
 import type { Pattern } from '../api/types';
+import { probeBlobWorker, STALL_MS, TickMonitor, type ClockSource } from './clock';
 import { beatsToSeconds, beatsToTicks, progressionEvents, stepFires, totalBeats, type StepEvent } from './schedule';
 
 export const DECLICK_S = 0.0015;
@@ -59,6 +60,58 @@ export interface EngineTransport {
   /** Slots whose render buffer is decoded and ready to fire / slots in the program. */
   loadedSlots: number;
   totalSlots: number;
+  /** Tone's clock: 'worker' (default), 'timeout' (fallback) or 'offline' (tests). */
+  clockSource: ClockSource;
+  /** Clock ticks are arriving (only meaningful while playing). */
+  ticking: boolean;
+  ticksPerSecond: number;
+  /** Set when the engine had to leave the worker clock, or the clock is dead. */
+  clockNote: string | null;
+  baseLatency: number | null;
+  outputLatency: number | null;
+  lookAhead: number;
+  /** Output device id when the webview reports one; '' is the system default. */
+  sinkId: string | null;
+}
+
+export interface OutputDevice {
+  id: string;
+  label: string;
+}
+
+const LOG_LINES = 60;
+
+/** Output devices the webview reports. Empty on webviews that do not expose
+ * `audiooutput` devices (WKWebView on macOS routes to the system output). */
+export async function listOutputDevices(): Promise<OutputDevice[]> {
+  if (typeof navigator === 'undefined' || !navigator.mediaDevices?.enumerateDevices) return [];
+  try {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    return all.filter((d) => d.kind === 'audiooutput').map((d, i) => ({ id: d.deviceId, label: d.label || `output ${i + 1}` }));
+  } catch {
+    return [];
+  }
+}
+
+function rawContext(): { setSinkId?: (id: string) => Promise<void>; sinkId?: unknown; baseLatency?: number; outputLatency?: number } {
+  return Tone.getContext().rawContext as unknown as ReturnType<typeof rawContext>;
+}
+
+/** `getContext()` is typed as the abstract base, which omits the clock source
+ * every concrete context has. */
+function clockOf(ctx: ReturnType<typeof Tone.getContext> = Tone.getContext()): { clockSource: ClockSource } {
+  return ctx as unknown as { clockSource: ClockSource };
+}
+
+/** `AudioContext.setSinkId` exists on Chromium-based webviews only. */
+export function canSelectOutput(): boolean {
+  return typeof rawContext().setSinkId === 'function';
+}
+
+export async function selectOutput(deviceId: string): Promise<void> {
+  const raw = rawContext();
+  if (typeof raw.setSinkId !== 'function') throw new Error('this webview cannot change the output device; use the system sound settings');
+  await raw.setSinkId(deviceId === 'default' ? '' : deviceId);
 }
 
 interface SlotNode {
@@ -102,7 +155,134 @@ export class PlaybackEngine {
   private audition: Tone.Player | null = null;
   private readonly listeners = new Set<(t: EngineTransport) => void>();
   private ticker: ReturnType<typeof setInterval> | null = null;
+  private readonly ticks = new TickMonitor();
+  private tickContext: ReturnType<typeof Tone.getContext> | null = null;
+  private clockNote: string | null = null;
+  private probed = false;
+  private watchdog: ReturnType<typeof setTimeout> | null = null;
+  private readonly log: string[] = [];
   onError: (message: string) => void = () => undefined;
+
+  // --- diagnostics ------------------------------------------------------------------
+
+  /** Console log plus a short ring buffer the Preferences page can show. */
+  private note(level: 'info' | 'warn' | 'error', message: string, data?: Record<string, unknown>): void {
+    const line = `${new Date().toISOString().slice(11, 23)} ${message}${data ? ' ' + JSON.stringify(data) : ''}`;
+    this.log.push(line);
+    if (this.log.length > LOG_LINES) this.log.shift();
+    console[level](`[engine] ${message}`, data ?? '');
+  }
+
+  getLog(): readonly string[] {
+    return this.log;
+  }
+
+  private readonly onTick = (): void => {
+    this.ticks.record(performance.now());
+  };
+
+  /** Listen to the current context's clock and probe the worker once. Tone
+   * only falls back to its timeout clock when the Worker constructor throws;
+   * a webview that refuses the blob: worker asynchronously leaves a transport
+   * that advances but never fires (the silent-playback bug). */
+  private attachClock(): void {
+    const ctx = Tone.getContext();
+    if (this.tickContext !== ctx) {
+      this.tickContext = ctx;
+      this.ticks.reset();
+      ctx.on('tick', this.onTick);
+    }
+    if (this.probed || clockOf(ctx).clockSource === 'offline') return;
+    this.probed = true;
+    if (clockOf(ctx).clockSource === 'timeout') {
+      this.clockNote = 'worker clock unavailable in this webview; using the timeout clock';
+      this.note('warn', 'clock', { source: 'timeout', reason: this.clockNote });
+      return;
+    }
+    void probeBlobWorker().then((ok) => {
+      if (ok || clockOf().clockSource !== 'worker') return;
+      this.fallback('the webview refused the blob: clock worker (content security policy or unsupported origin); using the timeout clock');
+    });
+  }
+
+  private fallback(reason: string): void {
+    const ctx = Tone.getContext();
+    if (clockOf(ctx).clockSource === 'worker') clockOf(ctx).clockSource = 'timeout';
+    this.clockNote = reason;
+    this.ticks.reset();
+    this.note('warn', 'clock fallback', { source: clockOf(ctx).clockSource, reason });
+    this.emit();
+  }
+
+  /** After Play, make sure ticks actually arrive; otherwise fall back, and if
+   * even the timeout clock is dead say so instead of playing silence. */
+  private armWatchdog(stage = 0): void {
+    this.disarmWatchdog();
+    const seen = this.ticks.total;
+    this.watchdog = setTimeout(() => {
+      this.watchdog = null;
+      if (!this.playing) return;
+      if (this.ticks.total > seen) return;
+      const ctx = Tone.getContext();
+      if (clockOf(ctx).clockSource === 'worker') {
+        this.fallback('the clock worker never ticked after Play (blocked by the webview); switched to the timeout clock');
+        this.armWatchdog(stage + 1);
+      } else if (stage < 2) {
+        this.armWatchdog(stage + 1);
+      } else {
+        this.clockNote = 'the audio clock is not ticking: nothing scheduled on the transport can play';
+        this.note('error', 'clock dead', { source: clockOf(ctx).clockSource });
+        this.onError(this.clockNote);
+        this.emit();
+      }
+    }, STALL_MS);
+  }
+
+  private disarmWatchdog(): void {
+    if (this.watchdog) clearTimeout(this.watchdog);
+    this.watchdog = null;
+  }
+
+  /** A 0.4 s tone straight to the output, bypassing the engine graph. */
+  async testToneDirect(): Promise<void> {
+    await Tone.start();
+    this.blip(new Tone.Oscillator(440, 'sine').toDestination(), 0.4);
+    this.note('info', 'test tone direct', { context: Tone.getContext().state });
+  }
+
+  /** A 0.4 s tone through the slot bus (density compressor, destination). */
+  async testToneBus(): Promise<void> {
+    await Tone.start();
+    const g = this.ensureGraph();
+    this.blip(new Tone.Oscillator(660, 'sine').connect(g.busIn), 0.4);
+    this.note('info', 'test tone bus', { context: Tone.getContext().state, density: this.densityRouted });
+  }
+
+  /** Four clicks timed by the context clock, the same ticker the Transport
+   * uses: silence here means scheduled playback cannot work. Resolves with
+   * how many fired. */
+  async testClockClicks(): Promise<number> {
+    await Tone.start();
+    this.attachClock();
+    const ctx = Tone.getContext();
+    let fired = 0;
+    for (let i = 0; i < 4; i++) {
+      ctx.setTimeout(() => {
+        fired++;
+        this.blip(new Tone.Oscillator(i === 0 ? 1320 : 880, 'square').toDestination(), 0.05);
+      }, i * 0.25);
+    }
+    await new Promise((r) => setTimeout(r, 1200));
+    this.note('info', 'clock clicks', { fired, source: clockOf(ctx).clockSource, ticksPerSecond: this.ticks.rate(performance.now()) });
+    return fired;
+  }
+
+  private blip(osc: Tone.Oscillator, seconds: number): void {
+    osc.volume.value = -14;
+    const now = Tone.now();
+    osc.start(now).stop(now + seconds);
+    osc.onstop = () => setTimeout(() => osc.dispose(), 0);
+  }
 
   private get transport(): ReturnType<typeof Tone.getTransport> {
     return Tone.getTransport();
@@ -111,6 +291,7 @@ export class PlaybackEngine {
   // --- graph --------------------------------------------------------------------
 
   private ensureGraph(): Graph {
+    this.attachClock();
     if (this.graph) return this.graph;
     const busIn = new Tone.Gain(1);
     const comp = new Tone.Compressor({
@@ -238,11 +419,11 @@ export class PlaybackEngine {
         node.buffer = buffer;
         if (!node.override) node.player.buffer = buffer;
         this.release(old);
-        console.info('[engine] buffer loaded', { slot: slot.id, path: slot.renderPath, seconds: buffer.duration.toFixed(3), loaded: node.player.loaded });
+        this.note('info', 'buffer loaded', { slot: slot.id, path: slot.renderPath, seconds: Number(buffer.duration.toFixed(3)), loaded: node.player.loaded });
         this.emit();
       })
       .catch((e: unknown) => {
-        console.error('[engine] buffer load failed', { slot: slot.id, path: slot.renderPath, error: e });
+        this.note('error', 'buffer load failed', { slot: slot.id, path: slot.renderPath, error: e instanceof Error ? e.message : String(e) });
         this.onError(`render load failed: ${e instanceof Error ? e.message : String(e)}`);
       });
   }
@@ -251,7 +432,7 @@ export class PlaybackEngine {
 
   private fire(node: SlotNode, event: StepEvent, time: number): void {
     if (!node.player.loaded) {
-      console.warn('[engine] trigger skipped: buffer not loaded', { region: node.regionId, path: node.path, startBeats: event.startBeats });
+      this.note('warn', 'trigger skipped: buffer not loaded', { region: node.regionId, path: node.path, startBeats: event.startBeats });
       return;
     }
     if (!stepFires(event, Math.random())) return;
@@ -301,7 +482,7 @@ export class PlaybackEngine {
       scheduled++;
     }
     if (!program.loop) t.schedule(() => this.stop(), `${beatsToTicks(total, ppq)}i`);
-    console.info('[engine] scheduled', {
+    this.note('info', 'scheduled', {
       events: scheduled,
       totalBeats: total,
       bpm: t.bpm.value,
@@ -336,12 +517,15 @@ export class PlaybackEngine {
     await Tone.start();
     this.ensureGraph();
     if (this.transport.state === 'started') return;
-    console.info('[engine] play', { context: Tone.getContext().state, ...this.snapshot() });
+    const snap = this.snapshot();
+    this.note('info', 'play', { context: snap.contextState, clock: snap.clockSource, buffers: `${snap.loadedSlots}/${snap.totalSlots}` });
     this.transport.start();
     this.startTicker();
+    this.armWatchdog();
   }
 
   stop(): void {
+    this.disarmWatchdog();
     this.transport.stop();
     this.transport.ticks = 0;
     for (const node of this.slots.values()) {
@@ -373,8 +557,10 @@ export class PlaybackEngine {
 
   snapshot(): EngineTransport {
     const ctx = Tone.getContext();
+    const raw = rawContext();
     let loaded = 0;
     for (const n of this.slots.values()) if (n.player.loaded) loaded++;
+    const now = performance.now();
     return {
       playing: this.playing,
       positionBeats: this.positionBeats,
@@ -382,6 +568,14 @@ export class PlaybackEngine {
       sampleRate: ctx.sampleRate,
       loadedSlots: loaded,
       totalSlots: this.slots.size,
+      clockSource: clockOf(ctx).clockSource,
+      ticking: this.ticks.ticking(now),
+      ticksPerSecond: this.ticks.rate(now),
+      clockNote: this.clockNote,
+      baseLatency: typeof raw.baseLatency === 'number' ? raw.baseLatency : null,
+      outputLatency: typeof raw.outputLatency === 'number' ? raw.outputLatency : null,
+      lookAhead: ctx.lookAhead,
+      sinkId: typeof raw.sinkId === 'string' ? raw.sinkId : null,
     };
   }
 
@@ -435,7 +629,16 @@ export class PlaybackEngine {
     node.override?.dispose();
     node.override = buffer;
     node.player.buffer = buffer;
-    if (!this.playing) await this.play();
+    if (!this.playing) {
+      // This runs from a render event, not a click: a context that is still
+      // suspended cannot be resumed here on webviews that need a gesture.
+      await Tone.start();
+      if (Tone.getContext().state !== 'running') {
+        this.onError('press Play once to enable audio, then audition in context');
+        return;
+      }
+      await this.play();
+    }
   }
 
   private clearOverride(node: SlotNode): void {

@@ -1,6 +1,7 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Splitter } from './components/Splitter';
 import { LibraryPane } from './panes/LibraryPane';
+import { PreferencesDialog } from './panes/PreferencesDialog';
 import { ProgressionPane } from './panes/ProgressionPane';
 import { SetPane } from './panes/SetPane';
 import { TransportPane } from './panes/TransportPane';
@@ -25,9 +26,22 @@ function ErrorBar() {
 
 export function App() {
   const fractions = useStore((s) => s.ui.paneFractions);
+  const dialog = useStore((s) => s.ui.dialog);
   const setUi = useStore((s) => s.setUi);
   const panesRef = useRef<HTMLDivElement>(null);
   const dragStart = useRef<[number, number, number]>(fractions);
+
+  // Cmd/Ctrl+, opens Preferences, as on every desktop app.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === ',') {
+        e.preventDefault();
+        setUi({ dialog: 'preferences' });
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [setUi]);
 
   /** Moves width between pane `i` and `i + 1`, keeping the total constant. */
   const drag = (i: 0 | 1) => (deltaPx: number) => {
@@ -61,6 +75,7 @@ export function App() {
         <ProgressionPane />
       </div>
       <TransportPane />
+      {dialog === 'preferences' && <PreferencesDialog />}
     </div>
   );
 }

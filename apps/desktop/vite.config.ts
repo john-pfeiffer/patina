@@ -18,6 +18,8 @@ export default defineConfig({
   },
   test: {
     include: ['src/**/*.test.ts'],
+    // Real-browser tests (Web Audio) live in *.browser.test.ts; see vitest.browser.config.ts.
+    exclude: ['src/**/*.browser.test.ts', 'node_modules/**'],
     environment: 'node',
   },
 });

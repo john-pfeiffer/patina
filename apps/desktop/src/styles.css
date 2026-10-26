@@ -635,3 +635,104 @@ table.candidates tr.current {
   color: var(--bad);
   border-bottom: 1px solid var(--bad);
 }
+
+/* Dialogs */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(30, 30, 30, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 32px);
+  background: var(--bg-pane);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.dialog-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px;
+}
+
+.prefs {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 360px;
+}
+
+.prefs-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-right: 1px solid var(--border);
+  padding-right: 8px;
+}
+
+.prefs-tabs button {
+  text-align: left;
+}
+
+.prefs-section h3 {
+  margin: 8px 0 4px;
+}
+
+.prefs-section h3:first-child {
+  margin-top: 0;
+}
+
+table.readouts {
+  border-collapse: collapse;
+}
+
+table.readouts th {
+  color: var(--fg-muted);
+  font-weight: 400;
+  text-align: left;
+  padding: 1px 12px 1px 0;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+table.readouts td {
+  padding: 1px 0;
+}
+
+.log {
+  margin: 4px 0 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  background: #fff;
+  max-height: 160px;
+  overflow: auto;
+  font-size: 11px;
+  white-space: pre-wrap;
+}
+
+.badge-button {
+  cursor: pointer;
+}
+
+.badge-button:hover {
+  filter: brightness(0.97);
+}

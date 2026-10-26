@@ -131,3 +131,24 @@ after `tauri build` and calls `/health` on all three platforms.
   every region and slot but strictness ignores it.
 - **Python ≥ 3.12** for the sidecar (librosa 1.0 requires it; python-stretch
   ships abi3 wheels from 3.12).
+- **The transport clock needs `worker-src blob:` in the CSP.** Tone.js ticks its
+  Transport from a Web Worker built from a `blob:` URL and only falls back to
+  `setTimeout` when the constructor throws. A webview that refuses the worker
+  asynchronously (the Tauri CSP did, on the packaged macOS build) leaves a
+  transport whose position advances while nothing scheduled on it fires:
+  solo audition and export worked, slot playback was silent, and the position
+  ran past the loop end (tracker #35). Both policies now allow blob workers,
+  the engine probes a blob worker at startup and watches for ticks after
+  Play, switching Tone's `clockSource` to `timeout` when they never come
+  (`apps/desktop/src/audio/clock.ts`), and Preferences › Audio shows the clock
+  state with three test buttons (tone direct, tone through the bus, clicks on
+  the clock) so "no sound" can be bisected in one click. The engine is also
+  rendered offline in headless Chromium by `pnpm test:browser`.
+- **The engine keeps playing a stale render.** `ensure_render` already returned
+  the last good URL while a new key renders; the UI dropped it unless the
+  status was `ready`. It now plays whatever URL the status carries for the
+  slot's region (`renderPathFor`), as §2 of the handoff asks.
+- **Output device selection is Chromium-only.** `AudioContext.setSinkId` and
+  `audiooutput` enumeration exist on WebView2, not on WKWebView, so on macOS
+  Preferences › Audio reports the system output and says where to change it
+  rather than offering a picker that does nothing.

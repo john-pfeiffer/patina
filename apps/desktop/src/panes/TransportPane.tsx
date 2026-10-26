@@ -85,8 +85,10 @@ export function TransportPane() {
   const jobList = Object.values(jobs)
     .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
     .slice(0, MAX_JOBS_SHOWN);
+  const setUi = useStore((s) => s.setUi);
   const canPlay = progression !== null && progression.slots.length > 0;
   const assignedSlots = progression?.slots.filter((sl) => sl.region_id).length ?? 0;
+  const clockStalled = transport.playing && transport.ticking === false;
 
   return (
     <section className="pane pane-transport">
@@ -128,14 +130,20 @@ export function TransportPane() {
             no slot has a region: select a slot and assign a candidate, press Reroll, or use a region's “assign”
           </span>
         )}
-        <span
-          className={`badge ${transport.contextState === 'running' ? 'badge-ok' : 'badge-busy'}`}
-          title="Web Audio context state · sample rate · slot buffers decoded"
+        <button
+          type="button"
+          className={`badge badge-button ${clockStalled ? 'badge-bad' : transport.contextState === 'running' ? 'badge-ok' : 'badge-busy'}`}
+          title={`Web Audio context state · sample rate · slot buffers decoded · clock${transport.clockNote ? `\n${transport.clockNote}` : ''}\nclick for audio preferences`}
+          onClick={() => setUi({ dialog: 'preferences', prefsTab: 'audio' })}
         >
           audio {transport.contextState ?? 'idle'}
           {transport.sampleRate ? ` · ${Math.round(transport.sampleRate)} Hz` : ''}
           {transport.totalSlots !== undefined ? ` · ${transport.loadedSlots ?? 0}/${transport.totalSlots} buffers` : ''}
-        </span>
+          {transport.clockSource ? ` · clock ${transport.clockSource}${transport.playing ? (transport.ticking ? ' ✓' : ' STALLED') : ''}` : ''}
+        </button>
+        <button type="button" onClick={() => setUi({ dialog: 'preferences' })} title="preferences (⌘,)">
+          prefs…
+        </button>
         <span className="spacer" />
         <span className="readout" title="analysis queue">
           analyse {counts.analyzeRunning} running · {counts.analyzeQueued} queued

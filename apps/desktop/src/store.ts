@@ -48,7 +48,19 @@ export interface TransportState {
   sampleRate?: number;
   loadedSlots?: number;
   totalSlots?: number;
+  /** Diagnostics mirrored from the engine snapshot (src/audio/engine.ts). */
+  clockSource?: string;
+  ticking?: boolean;
+  ticksPerSecond?: number;
+  clockNote?: string | null;
+  baseLatency?: number | null;
+  outputLatency?: number | null;
+  lookAhead?: number;
+  sinkId?: string | null;
 }
+
+export type DialogName = 'preferences';
+export type PrefsTab = 'audio' | 'library' | 'analysis' | 'appearance';
 
 export interface UiState {
   selectedSlotId: string | null;
@@ -58,6 +70,11 @@ export interface UiState {
   collapsedSamples: Record<string, true>;
   outDir: string;
   exportLoops: number;
+  /** Which modal is open, if any. */
+  dialog: DialogName | null;
+  prefsTab: PrefsTab;
+  /** Chosen output device (Chromium webviews only); null is the system default. */
+  audioSinkId: string | null;
 }
 
 export interface PendingAudition {
@@ -199,6 +216,7 @@ interface Prefs {
   currentProgressionId: string | null;
   paneFractions: [number, number, number];
   outDir: string;
+  audioSinkId: string | null;
 }
 
 function loadPrefs(): Partial<Prefs> {
@@ -292,6 +310,7 @@ export const useStore = create<PatineState>()((set, get) => {
       currentProgressionId: s.currentProgressionId,
       paneFractions: s.ui.paneFractions,
       outDir: s.ui.outDir,
+      audioSinkId: s.ui.audioSinkId,
     });
   };
 
@@ -322,6 +341,9 @@ export const useStore = create<PatineState>()((set, get) => {
       collapsedSamples: {},
       outDir: prefs.outDir ?? '',
       exportLoops: 1,
+      dialog: null,
+      prefsTab: 'audio',
+      audioSinkId: prefs.audioSinkId ?? null,
     },
     lastError: null,
 
@@ -329,7 +351,7 @@ export const useStore = create<PatineState>()((set, get) => {
     setTransport: (patch) => set((s) => ({ transport: { ...s.transport, ...patch } })),
     setUi: (patch) => {
       set((s) => ({ ui: { ...s.ui, ...patch } }));
-      if (patch.paneFractions || patch.outDir !== undefined) persist();
+      if (patch.paneFractions || patch.outDir !== undefined || patch.audioSinkId !== undefined) persist();
     },
     clearError: () => set({ lastError: null }),
 

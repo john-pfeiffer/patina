@@ -5,7 +5,7 @@ Read `HANDOFF.md` first; this file says where each part of it lives.
 ```
 patina/
   apps/desktop/            Tauri 2 shell (Rust) + React/TypeScript UI (Vite)
-    src/                   UI — panes, playback engine, API client
+    src/                   UI — panes, playback engine (audio/engine.ts, audio/clock.ts), API client
     src-tauri/             Rust shell: window, sidecar lifecycle, `sidecar_info` command
   sidecar/                 Python engine, package `patine` (uv-managed)
     src/patine/
@@ -45,6 +45,13 @@ The sidecar renders each conformed region to a float32 WAV in the render cache.
 The UI loads those into Web Audio (Tone.js) and schedules them with a lookahead
 clock. The UI never waits on DSP: it plays the last good render and marks a
 region *stale* until the new one lands (`render.updated` SSE events).
+
+Tone's clock is a blob-URL Web Worker, which the webview must allow
+(`worker-src blob:` in both CSPs). `audio/clock.ts` probes that worker and
+watches for ticks after Play; when none arrive the engine switches Tone to its
+timeout clock and says so in the transport badge and Preferences › Audio, which
+also carries the test tones and a copyable diagnostics log. `pnpm test:browser`
+renders the engine offline in headless Chromium.
 
 Render cache key = blake2b of (sample hash, region bounds, user overrides,
 temporal settings, session bpm, tonal settings, anchor fingerprint, transpose,
