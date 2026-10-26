@@ -212,6 +212,9 @@ export interface RenderStatus {
 export interface Candidate {
   region: Region;
   sample_name: string;
+  sample_id: string;
+  /** Other slots of this progression (1-based) whose region comes from the same sample. */
+  used_by_slot_idx: number[];
   score: number;
   transposition_cost: number;
   timbral_distance: number;
@@ -305,6 +308,13 @@ export interface RerollRequest {
   amount: number;
   strictness: Strictness;
   seed?: number;
+  /** No two slots on regions of the same source sample (relaxed with a warning when impossible). */
+  unique_samples?: boolean;
+}
+
+export interface RerollResponse {
+  progression: Progression;
+  warnings: string[];
 }
 
 export interface ParseRequest {

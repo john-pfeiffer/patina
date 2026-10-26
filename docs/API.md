@@ -72,8 +72,8 @@ SSE events (`event:` name, `data:` JSON):
 | DELETE | `/progressions/{id}` | → 204 |
 | GET | `/progressions/{id}/renders` | → `{slot_id: RenderStatus}` for every assigned slot at that slot's transposition; missing renders are queued |
 | PATCH | `/slots/{id}` | `SlotPatch` → `Slot`. Assigning a `region_id` also adds that region to the progression's set (first member becomes the anchor), so the member list is always every region in use. |
-| GET | `/slots/{id}/candidates?strictness=exact\|function\|two_tones&limit=50` | → `Candidate[]` ranked by §5.2 score; substitutions rank before transpositions |
-| POST | `/progressions/{id}/reroll` | `RerollRequest {amount, strictness, seed?}` → `Progression` (§5.5: unlocked slots only) |
+| GET | `/slots/{id}/candidates?strictness=exact\|function\|two_tones&limit=50&unique_samples=false` | → `Candidate[]` ranked by §5.2 score; substitutions rank before transpositions. Each candidate carries `sample_id` and `used_by_slot_idx` (the other slots playing a region of the same sample); `unique_samples=true` hides those |
+| POST | `/progressions/{id}/reroll` | `RerollRequest {amount, strictness, seed?, unique_samples?}` → `RerollResponse {progression, warnings}` (§5.5: unlocked slots only). With `unique_samples` no two slots get regions of the same source sample: kept slots claim their samples, changing slots are filled in order excluding claimed samples, and a slot with nothing left falls back to the full pool with a warning |
 | POST | `/progressions/import-csv` | `CsvImportRequest {set_id, csv_text}` → `Progression[]`; columns `chords, roman, key, bpm` (header row required, any order) |
 
 ## Theory

@@ -75,6 +75,8 @@ export interface UiState {
   prefsTab: PrefsTab;
   /** Chosen output device (Chromium webviews only); null is the system default. */
   audioSinkId: string | null;
+  /** Reroll and the candidate drawer never put two slots on the same source sample. */
+  uniqueSamples: boolean;
 }
 
 export interface PendingAudition {
@@ -217,6 +219,7 @@ interface Prefs {
   paneFractions: [number, number, number];
   outDir: string;
   audioSinkId: string | null;
+  uniqueSamples: boolean;
 }
 
 function loadPrefs(): Partial<Prefs> {
@@ -311,6 +314,7 @@ export const useStore = create<PatineState>()((set, get) => {
       paneFractions: s.ui.paneFractions,
       outDir: s.ui.outDir,
       audioSinkId: s.ui.audioSinkId,
+      uniqueSamples: s.ui.uniqueSamples,
     });
   };
 
@@ -344,6 +348,7 @@ export const useStore = create<PatineState>()((set, get) => {
       dialog: null,
       prefsTab: 'audio',
       audioSinkId: prefs.audioSinkId ?? null,
+      uniqueSamples: prefs.uniqueSamples ?? false,
     },
     lastError: null,
 
@@ -351,7 +356,7 @@ export const useStore = create<PatineState>()((set, get) => {
     setTransport: (patch) => set((s) => ({ transport: { ...s.transport, ...patch } })),
     setUi: (patch) => {
       set((s) => ({ ui: { ...s.ui, ...patch } }));
-      if (patch.paneFractions || patch.outDir !== undefined || patch.audioSinkId !== undefined) persist();
+      if (patch.paneFractions || patch.outDir !== undefined || patch.audioSinkId !== undefined || patch.uniqueSamples !== undefined) persist();
     },
     clearError: () => set({ lastError: null }),
 
@@ -577,7 +582,11 @@ export const useStore = create<PatineState>()((set, get) => {
           progressions: s.progressions.map((p) =>
             p.id === slot.progression_id ? { ...p, slots: replaceById(p.slots, slot).sort((a, b) => a.idx - b.idx) } : p,
           ),
-          candidates: patch.chord_symbol !== undefined || patch.roman !== undefined ? {} : s.candidates,
+          // A chord change changes the pools; an assignment changes which samples are in use.
+          candidates:
+            patch.chord_symbol !== undefined || patch.roman !== undefined || patch.region_id !== undefined || patch.clear_region
+              ? {}
+              : s.candidates,
         }));
         if (patch.region_id !== undefined || patch.clear_region || patch.transpose_semitones !== undefined) {
           await get().refreshSlotRenders();
@@ -598,19 +607,25 @@ export const useStore = create<PatineState>()((set, get) => {
 
     loadCandidates: (slotId, strictness) =>
       run(async () => {
-        const list = await api.slots.candidates(slotId, strictness);
-        set((s) => ({ candidates: { ...s.candidates, [candidateKey(slotId, strictness)]: orderCandidates(list) } }));
+        const unique = get().ui.uniqueSamples;
+        const list = await api.slots.candidates(slotId, strictness, unique);
+        set((s) => ({ candidates: { ...s.candidates, [candidateKey(slotId, strictness, unique)]: orderCandidates(list) } }));
       }),
 
     reroll: () =>
       run(async () => {
         const id = get().currentProgressionId;
         if (!id) return;
-        const { rerollAmount, strictness } = get().ui;
+        const { rerollAmount, strictness, uniqueSamples } = get().ui;
         const before = get().progressions.find((p) => p.id === id);
-        const updated = await api.progressions.reroll(id, { amount: rerollAmount, strictness });
-        set((s) => ({ progressions: replaceById(s.progressions, updated) }));
+        const { progression: updated, warnings } = await api.progressions.reroll(id, {
+          amount: rerollAmount,
+          strictness,
+          unique_samples: uniqueSamples,
+        });
+        set((s) => ({ progressions: replaceById(s.progressions, updated), candidates: {} }));
         const changed = updated.slots.some((sl, i) => sl.region_id !== before?.slots[i]?.region_id);
+        if (warnings.length > 0) set({ lastError: `reroll: ${warnings.join('; ')}` });
         if (!changed) {
           const unassigned = updated.slots.filter((sl) => !sl.region_id && !sl.locked).length;
           set({

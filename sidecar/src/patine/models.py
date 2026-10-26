@@ -260,6 +260,10 @@ class Candidate(BaseModel):
 
     region: Region
     sample_name: str
+    sample_id: str = ""
+    # Other slots of the same progression whose region comes from this sample
+    # (1-based display indices), so the UI can show and the reroll can avoid reuse.
+    used_by_slot_idx: list[int] = Field(default_factory=list)
     score: float
     transposition_cost: float
     timbral_distance: float
@@ -340,6 +344,15 @@ class RerollRequest(BaseModel):
     amount: float = 100.0            # percent of unlocked slots to change
     strictness: Literal["exact", "function", "two_tones"] = "function"
     seed: int | None = None
+    # Never give two slots regions from the same source sample. Locked and
+    # unchanged slots claim their samples first; when a slot has no candidate
+    # left from an unused sample the rule is relaxed for it and a warning says so.
+    unique_samples: bool = False
+
+
+class RerollResponse(BaseModel):
+    progression: Progression
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ParseRequest(BaseModel):

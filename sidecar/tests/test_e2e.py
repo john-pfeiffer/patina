@@ -99,8 +99,17 @@ def test_full_flow(app_client, tmp_data_dir):
     # Reroll changes only unlocked slots.
     app_client.patch(f"/slots/{p['slots'][0]['id']}", json={"locked": True})
     before = {s["id"]: s["region_id"] for s in p["slots"]}
-    p3 = app_client.post(f"/progressions/{p['id']}/reroll", json={"amount": 100, "strictness": "two_tones", "seed": 3}).json()
+    rr = app_client.post(f"/progressions/{p['id']}/reroll", json={"amount": 100, "strictness": "two_tones", "seed": 3}).json()
+    p3 = rr["progression"]
     assert p3["slots"][0]["region_id"] == before[p3["slots"][0]["id"]]
+    assert isinstance(rr["warnings"], list)
+
+    # Candidates know which other slots already play their sample.
+    cands = app_client.get(f"/slots/{p3['slots'][1]['id']}/candidates", params={"strictness": "two_tones"}).json()
+    assert all("sample_id" in c and isinstance(c["used_by_slot_idx"], list) for c in cands)
+    only = app_client.get(f"/slots/{p3['slots'][1]['id']}/candidates",
+                          params={"strictness": "two_tones", "unique_samples": "true"}).json()
+    assert all(c["used_by_slot_idx"] == [] for c in only)
 
     # Export all four kinds.
     out = tmp_data_dir / "out"

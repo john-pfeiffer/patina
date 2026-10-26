@@ -736,3 +736,19 @@ table.readouts td {
 .badge-button:hover {
   filter: brightness(0.97);
 }
+
+table.candidates tr.used td {
+  color: var(--fg-muted);
+}
+
+table.candidates td.hear {
+  white-space: nowrap;
+}
+
+table.candidates td.hear button {
+  margin: 0 1px;
+}
+
+table.candidates td .badge {
+  margin-left: 4px;
+}

@@ -24,6 +24,7 @@ import type {
   RegionPatch,
   RenderStatus,
   RerollRequest,
+  RerollResponse,
   Sample,
   SetCreate,
   SetPatch,
@@ -160,14 +161,14 @@ export const api = {
     patch: (id: string, body: ProgressionPatch) => request<Progression>('PATCH', `/progressions/${id}`, body),
     remove: (id: string) => request<void>('DELETE', `/progressions/${id}`),
     renders: (id: string) => request<Record<string, RenderStatus>>('GET', `/progressions/${id}/renders`),
-    reroll: (id: string, body: RerollRequest) => request<Progression>('POST', `/progressions/${id}/reroll`, body),
+    reroll: (id: string, body: RerollRequest) => request<RerollResponse>('POST', `/progressions/${id}/reroll`, body),
     importCsv: (body: CsvImportRequest) => request<Progression[]>('POST', '/progressions/import-csv', body),
   },
 
   slots: {
     patch: (id: string, body: SlotPatch) => request<Slot>('PATCH', `/slots/${id}`, body),
-    candidates: (id: string, strictness: Strictness, limit = 50) =>
-      request<Candidate[]>('GET', `/slots/${id}/candidates${q({ strictness, limit })}`),
+    candidates: (id: string, strictness: Strictness, uniqueSamples = false, limit = 50) =>
+      request<Candidate[]>('GET', `/slots/${id}/candidates${q({ strictness, limit, unique_samples: uniqueSamples ? 'true' : undefined })}`),
   },
 
   theory: {
