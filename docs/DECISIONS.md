@@ -213,3 +213,13 @@ after `tauri build` and calls `/health` on all three platforms.
   tonal measurements and a slot's pattern editor sit behind disclosures so a
   row reads as one line; Preferences › Appearance has a UI scale (page zoom,
   85–140 %) and the sidebar toggles. Layout and scale persist in `patine.ui`.
+- **`develop` is the default branch; `main` is release-only and self-healing.**
+  GitHub's compare page, its "Compare & pull request" banner and new Claude
+  Code sessions all start from the default branch, which is how a feature PR
+  ended up targeting `main`. The rulesets in `.github/rulesets/` already
+  blocked that merge through the required `Release source` check; the check
+  now also retargets such a PR at `develop` and leaves one comment, so the
+  mistake corrects itself instead of waiting on a person, and fails only when
+  the PR cannot be edited (a fork). Pushes to `jp/**` branches (Claude Code's
+  cloud sessions) run CI like the other feature prefixes, and the pull
+  request template repeats the base rule where PRs are written.

@@ -37,14 +37,17 @@ pnpm dev:ui        # just the UI in a browser on http://localhost:1420 (talks to
 
 ## Branches and releases
 
-- `main` is the default branch and the released, known-good state. Until v1
-  it stays at the initial commit; nothing merges into it before then.
-- `develop` is where all work lands. Feature work (`feature/*`, `fix/*`,
-  `chore/*`, and Claude Code's `claude/*` branches) branches **from
-  `develop`** and comes back by squash-merged pull request **into `develop`**
-  with CI green. Two habits, because `main` is the default: set the base to
-  `develop` when opening a PR (the `Release source` check fails a PR into
-  `main` from anywhere else), and start Claude Code sessions from `develop`.
+- `develop` is the default branch (Settings → General → Default branch) and
+  where all work lands. Feature work (`feature/*`, `fix/*`, `chore/*`, and
+  Claude Code's `claude/*` and `jp/*` branches) branches **from `develop`**
+  and comes back by squash-merged pull request **into `develop`** with CI
+  green. New pull requests and new Claude Code sessions therefore start from
+  `develop` without any extra step.
+- `main` is the released, known-good state. Until v1 it stays at the initial
+  commit; nothing merges into it before then. Only `develop` (a release) and
+  `hotfix/*` branches may open pull requests into it: a PR into `main` from
+  any other branch is retargeted at `develop` by the `Release source` check,
+  which leaves a comment saying so.
 - Test builds are the CI artefacts `Patine-dev-<sha7>-<OS>` from every push
   to `develop`. A tracker item merged to `develop` is "Fixed in develop" with
   that build id.
