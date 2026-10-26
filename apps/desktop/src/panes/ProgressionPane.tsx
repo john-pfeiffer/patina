@@ -152,6 +152,7 @@ export function ProgressionPane() {
   const selectedSlot = useStore(selectSelectedSlot);
   const rerollAmount = useStore((s) => s.ui.rerollAmount);
   const strictness = useStore((s) => s.ui.strictness);
+  const uniqueSamples = useStore((s) => s.ui.uniqueSamples);
   const setUi = useStore((s) => s.setUi);
   const patchProgression = useStore((s) => s.patchProgression);
   const createProgression = useStore((s) => s.createProgression);
@@ -179,7 +180,8 @@ export function ProgressionPane() {
         <h2>Progression</h2>
         <ProgressionPicker />
       </header>
-      <div className="pane-body">
+      <div className={`pane-body prog-body ${selectedSlot ? 'prog-split' : ''}`}>
+        <div className="prog-main">
         {!set && <p className="muted">Select or create a set first.</p>}
         {set && (
           <div className="block">
@@ -205,6 +207,10 @@ export function ProgressionPane() {
                 unit="%"
                 onChange={(v) => setUi({ rerollAmount: v })}
               />
+              <label className="check" title="never put two slots on regions of the same source sample; also hides such candidates in the drawer">
+                <input type="checkbox" checked={uniqueSamples} onChange={(e) => setUi({ uniqueSamples: e.target.checked })} />
+                distinct samples
+              </label>
               <button
                 type="button"
                 disabled={!progression || progression.slots.length === 0 || rerollAmount <= 0}
@@ -241,8 +247,13 @@ export function ProgressionPane() {
             })}
           </div>
         )}
-        {selectedSlot && <CandidateDrawer slot={selectedSlot} />}
         <CsvImport />
+        </div>
+        {selectedSlot && (
+          <aside className="prog-side">
+            <CandidateDrawer slot={selectedSlot} />
+          </aside>
+        )}
       </div>
     </section>
   );

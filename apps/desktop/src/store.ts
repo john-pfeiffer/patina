@@ -12,14 +12,18 @@ import type {
   ConformSet,
   ExportKind,
   Job,
+  LibraryRoot,
   Progression,
   ProgressionCreate,
   ProgressionPatch,
   Region,
+  RegionCreate,
   RegionPatch,
   RenderStatus,
   Sample,
   SetPatch,
+  Settings,
+  SettingsPatch,
   SidecarEventMap,
   SidecarEventName,
   SidecarInfo,
@@ -30,6 +34,7 @@ import type {
 import { candidateKey, orderCandidates } from './util/candidates';
 import { transposeBetween } from './util/chords';
 import { errorMessage } from './util/format';
+import { clampScale, DEFAULT_LAYOUT, type Layout } from './util/layout';
 
 export type ConnectionStatus = 'starting' | 'connecting' | 'ready' | 'error';
 
@@ -48,16 +53,50 @@ export interface TransportState {
   sampleRate?: number;
   loadedSlots?: number;
   totalSlots?: number;
+  /** Diagnostics mirrored from the engine snapshot (src/audio/engine.ts). */
+  clockSource?: string;
+  ticking?: boolean;
+  ticksPerSecond?: number;
+  clockNote?: string | null;
+  baseLatency?: number | null;
+  outputLatency?: number | null;
+  lookAhead?: number;
+  sinkId?: string | null;
 }
+
+export type DialogName = 'preferences' | 'region';
+
+export interface RegionEditorTarget {
+  regionId: string;
+  /** Slot the editor was opened from, for in-context audition and assigning a new region. */
+  slotId: string | null;
+}
+export type PrefsTab = 'audio' | 'library' | 'analysis' | 'appearance';
 
 export interface UiState {
   selectedSlotId: string | null;
   strictness: Strictness;
   rerollAmount: number;
-  paneFractions: [number, number, number];
+  /** Workspace: sidebar widths and collapse state. */
+  layout: Layout;
+  /** Page zoom in percent (Preferences › Appearance). */
+  uiScale: number;
   collapsedSamples: Record<string, true>;
   outDir: string;
   exportLoops: number;
+  /** Which modal is open, if any. */
+  dialog: DialogName | null;
+  prefsTab: PrefsTab;
+  /** Chosen output device (Chromium webviews only); null is the system default. */
+  audioSinkId: string | null;
+  /** Reroll and the candidate drawer never put two slots on the same source sample. */
+  uniqueSamples: boolean;
+  /** Region open in the editor dialog (dialog === 'region'). */
+  editor: RegionEditorTarget | null;
+  /** Library pane filter: name, folder, chord, key. */
+  libraryFilter: string;
+  /** Collapsed folders of the library tree, by `LibraryFolder.key`. */
+  collapsedFolders: Record<string, true>;
 }
 
 export interface PendingAudition {
@@ -68,6 +107,10 @@ export interface PendingAudition {
 export interface PatineState {
   connection: ConnectionState;
   samples: Sample[];
+  /** Folders the library scans (Preferences › Library). */
+  roots: LibraryRoot[];
+  /** Sidecar settings; null until loaded. */
+  settings: Settings | null;
   sets: ConformSet[];
   currentSetId: string | null;
   progressions: Progression[];
@@ -100,7 +143,19 @@ export interface PatineState {
   ingest: (paths: string[]) => Promise<void>;
   removeSample: (id: string) => Promise<void>;
   reanalyze: (id: string) => Promise<void>;
+  reanalyzeAll: () => Promise<void>;
   patchRegion: (id: string, patch: RegionPatch) => Promise<void>;
+  /** Save a draft selection as a new user region on the sample; returns it (null on failure). */
+  createRegion: (sampleId: string, body: RegionCreate) => Promise<Region | null>;
+  openEditor: (regionId: string, slotId?: string | null) => void;
+
+  refreshRoots: () => Promise<void>;
+  addRoot: (path: string, name?: string) => Promise<void>;
+  scanRoot: (id: string) => Promise<void>;
+  scanAllRoots: () => Promise<void>;
+  removeRoot: (id: string, deleteSamples: boolean) => Promise<void>;
+  refreshSettings: () => Promise<void>;
+  patchSettings: (patch: SettingsPatch) => Promise<void>;
 
   refreshSets: () => Promise<void>;
   refreshSet: (id: string) => Promise<void>;
@@ -165,6 +220,7 @@ export const selectAnchorRegion = (s: PatineState): Region | null => {
 };
 
 export interface QueueCounts {
+  scanActive: number;
   analyzeQueued: number;
   analyzeRunning: number;
   renderQueued: number;
@@ -173,9 +229,10 @@ export interface QueueCounts {
 }
 
 export const selectQueueCounts = (jobs: Record<string, Job>): QueueCounts => {
-  const c: QueueCounts = { analyzeQueued: 0, analyzeRunning: 0, renderQueued: 0, renderRunning: 0, exportActive: 0 };
+  const c: QueueCounts = { scanActive: 0, analyzeQueued: 0, analyzeRunning: 0, renderQueued: 0, renderRunning: 0, exportActive: 0 };
   for (const j of Object.values(jobs)) {
-    if (j.kind === 'analyze') {
+    if (j.kind === 'scan' && (j.status === 'queued' || j.status === 'running')) c.scanActive++;
+    else if (j.kind === 'analyze') {
       if (j.status === 'queued') c.analyzeQueued++;
       else if (j.status === 'running') c.analyzeRunning++;
     } else if (j.kind === 'render') {
@@ -197,8 +254,11 @@ const PREFS_KEY = 'patine.ui';
 interface Prefs {
   currentSetId: string | null;
   currentProgressionId: string | null;
-  paneFractions: [number, number, number];
+  layout: Layout;
+  uiScale: number;
   outDir: string;
+  audioSinkId: string | null;
+  uniqueSamples: boolean;
 }
 
 function loadPrefs(): Partial<Prefs> {
@@ -290,8 +350,11 @@ export const useStore = create<PatineState>()((set, get) => {
     savePrefs({
       currentSetId: s.currentSetId,
       currentProgressionId: s.currentProgressionId,
-      paneFractions: s.ui.paneFractions,
+      layout: s.ui.layout,
+      uiScale: s.ui.uiScale,
       outDir: s.ui.outDir,
+      audioSinkId: s.ui.audioSinkId,
+      uniqueSamples: s.ui.uniqueSamples,
     });
   };
 
@@ -301,6 +364,8 @@ export const useStore = create<PatineState>()((set, get) => {
   return {
     connection: { status: 'starting', url: null, info: null, error: null, sse: 'closed' },
     samples: [],
+    roots: [],
+    settings: null,
     sets: [],
     currentSetId: prefs.currentSetId ?? null,
     progressions: [],
@@ -318,10 +383,18 @@ export const useStore = create<PatineState>()((set, get) => {
       selectedSlotId: null,
       strictness: 'function',
       rerollAmount: 100,
-      paneFractions: prefs.paneFractions ?? [1.2, 1, 1.4],
+      layout: { ...DEFAULT_LAYOUT, ...(prefs.layout ?? {}) },
+      uiScale: clampScale(prefs.uiScale ?? 100),
       collapsedSamples: {},
       outDir: prefs.outDir ?? '',
       exportLoops: 1,
+      dialog: null,
+      prefsTab: 'audio',
+      audioSinkId: prefs.audioSinkId ?? null,
+      uniqueSamples: prefs.uniqueSamples ?? false,
+      editor: null,
+      libraryFilter: '',
+      collapsedFolders: {},
     },
     lastError: null,
 
@@ -329,14 +402,20 @@ export const useStore = create<PatineState>()((set, get) => {
     setTransport: (patch) => set((s) => ({ transport: { ...s.transport, ...patch } })),
     setUi: (patch) => {
       set((s) => ({ ui: { ...s.ui, ...patch } }));
-      if (patch.paneFractions || patch.outDir !== undefined) persist();
+      if (patch.layout || patch.uiScale !== undefined || patch.outDir !== undefined || patch.audioSinkId !== undefined || patch.uniqueSamples !== undefined) persist();
     },
     clearError: () => set({ lastError: null }),
 
     loadAll: () =>
       run(async () => {
-        const [samples, sets, jobs] = await Promise.all([api.samples.list(), api.sets.list(), api.jobs.list()]);
-        set({ samples, sets, jobs: Object.fromEntries(jobs.map((j) => [j.id, j])) });
+        const [samples, sets, jobs, roots, settings] = await Promise.all([
+          api.samples.list(),
+          api.sets.list(),
+          api.jobs.list(),
+          api.roots.list(),
+          api.settings.get(),
+        ]);
+        set({ samples, sets, roots, settings, jobs: Object.fromEntries(jobs.map((j) => [j.id, j])) });
         const wanted = get().currentSetId;
         const setId = sets.some((x) => x.id === wanted) ? wanted : (sets[0]?.id ?? null);
         await get().selectSet(setId);
@@ -378,6 +457,54 @@ export const useStore = create<PatineState>()((set, get) => {
         set((s) => ({ jobs: { ...s.jobs, [job.id]: job } }));
       }),
 
+    reanalyzeAll: () =>
+      run(async () => {
+        const jobs = await api.samples.reanalyzeAll();
+        set((s) => ({ jobs: pruneJobs({ ...s.jobs, ...Object.fromEntries(jobs.map((j) => [j.id, j])) }) }));
+      }),
+
+    // --- library roots & settings --------------------------------------------------
+
+    refreshRoots: () =>
+      run(async () => {
+        set({ roots: await api.roots.list() });
+      }),
+
+    addRoot: (path, name) =>
+      run(async () => {
+        const { root, job } = await api.roots.add({ path, name });
+        set((s) => ({ roots: replaceById(s.roots, root), jobs: { ...s.jobs, [job.id]: job } }));
+      }),
+
+    scanRoot: (id) =>
+      run(async () => {
+        const job = await api.roots.scan(id);
+        set((s) => ({ jobs: { ...s.jobs, [job.id]: job } }));
+      }),
+
+    scanAllRoots: () =>
+      run(async () => {
+        const jobs = await api.roots.scanAll();
+        set((s) => ({ jobs: { ...s.jobs, ...Object.fromEntries(jobs.map((j) => [j.id, j])) } }));
+      }),
+
+    removeRoot: (id, deleteSamples) =>
+      run(async () => {
+        await api.roots.remove(id, deleteSamples);
+        set((s) => ({ roots: s.roots.filter((r) => r.id !== id) }));
+        await get().loadAll();
+      }),
+
+    refreshSettings: () =>
+      run(async () => {
+        set({ settings: await api.settings.get() });
+      }),
+
+    patchSettings: (patch) =>
+      run(async () => {
+        set({ settings: await api.settings.patch(patch) });
+      }),
+
     patchRegion: (id, patch) =>
       run(async () => {
         const region = await api.regions.patch(id, patch);
@@ -386,6 +513,19 @@ export const useStore = create<PatineState>()((set, get) => {
           await Promise.all([get().refreshSet(get().currentSetId ?? ''), get().refreshDeltas()]);
         }
       }),
+
+    createRegion: async (sampleId, body) => {
+      try {
+        const region = await api.samples.createRegion(sampleId, body);
+        set((s) => ({ samples: replaceRegion(s.samples, region), candidates: {} }));
+        return region;
+      } catch (e) {
+        set({ lastError: errorMessage(e) });
+        return null;
+      }
+    },
+
+    openEditor: (regionId, slotId = null) => set((s) => ({ ui: { ...s.ui, dialog: 'region', editor: { regionId, slotId } } })),
 
     // --- sets ------------------------------------------------------------------------
 
@@ -555,7 +695,11 @@ export const useStore = create<PatineState>()((set, get) => {
           progressions: s.progressions.map((p) =>
             p.id === slot.progression_id ? { ...p, slots: replaceById(p.slots, slot).sort((a, b) => a.idx - b.idx) } : p,
           ),
-          candidates: patch.chord_symbol !== undefined || patch.roman !== undefined ? {} : s.candidates,
+          // A chord change changes the pools; an assignment changes which samples are in use.
+          candidates:
+            patch.chord_symbol !== undefined || patch.roman !== undefined || patch.region_id !== undefined || patch.clear_region
+              ? {}
+              : s.candidates,
         }));
         if (patch.region_id !== undefined || patch.clear_region || patch.transpose_semitones !== undefined) {
           await get().refreshSlotRenders();
@@ -576,19 +720,25 @@ export const useStore = create<PatineState>()((set, get) => {
 
     loadCandidates: (slotId, strictness) =>
       run(async () => {
-        const list = await api.slots.candidates(slotId, strictness);
-        set((s) => ({ candidates: { ...s.candidates, [candidateKey(slotId, strictness)]: orderCandidates(list) } }));
+        const unique = get().ui.uniqueSamples;
+        const list = await api.slots.candidates(slotId, strictness, unique);
+        set((s) => ({ candidates: { ...s.candidates, [candidateKey(slotId, strictness, unique)]: orderCandidates(list) } }));
       }),
 
     reroll: () =>
       run(async () => {
         const id = get().currentProgressionId;
         if (!id) return;
-        const { rerollAmount, strictness } = get().ui;
+        const { rerollAmount, strictness, uniqueSamples } = get().ui;
         const before = get().progressions.find((p) => p.id === id);
-        const updated = await api.progressions.reroll(id, { amount: rerollAmount, strictness });
-        set((s) => ({ progressions: replaceById(s.progressions, updated) }));
+        const { progression: updated, warnings } = await api.progressions.reroll(id, {
+          amount: rerollAmount,
+          strictness,
+          unique_samples: uniqueSamples,
+        });
+        set((s) => ({ progressions: replaceById(s.progressions, updated), candidates: {} }));
         const changed = updated.slots.some((sl, i) => sl.region_id !== before?.slots[i]?.region_id);
+        if (warnings.length > 0) set({ lastError: `reroll: ${warnings.join('; ')}` });
         if (!changed) {
           const unassigned = updated.slots.filter((sl) => !sl.region_id && !sl.locked).length;
           set({
@@ -736,6 +886,27 @@ export const useStore = create<PatineState>()((set, get) => {
         case 'job.updated': {
           const job = data as SidecarEventMap['job.updated'];
           set((s) => ({ jobs: pruneJobs({ ...s.jobs, [job.id]: job }) }));
+          break;
+        }
+        case 'root.updated': {
+          const ev = data as SidecarEventMap['root.updated'];
+          if (ev.status === 'removed') {
+            set((s) => ({ roots: s.roots.filter((r) => r.id !== ev.root_id) }));
+            debounced('load-all', 300, () => void get().loadAll());
+            break;
+          }
+          set((s) => ({
+            roots: s.roots.map((r) =>
+              r.id === ev.root_id
+                ? { ...r, status: ev.status as LibraryRoot['status'], file_count: ev.file_count ?? r.file_count, error: ev.error ?? null, last_scan_at: ev.last_scan_at ?? r.last_scan_at }
+                : r,
+            ),
+          }));
+          if (!get().roots.some((r) => r.id === ev.root_id)) debounced('roots', 300, () => void get().refreshRoots());
+          break;
+        }
+        case 'settings.updated': {
+          set({ settings: data as SidecarEventMap['settings.updated'] });
           break;
         }
       }

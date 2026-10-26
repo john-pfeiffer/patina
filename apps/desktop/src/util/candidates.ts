@@ -1,8 +1,9 @@
 import type { Candidate, Strictness } from '../api/types';
 
-/** Cache key for the candidate drawer: one list per slot and strictness. */
-export function candidateKey(slotId: string, strictness: Strictness): string {
-  return `${slotId}:${strictness}`;
+/** Cache key for the candidate drawer: one list per slot, strictness and
+ * distinct-samples setting. */
+export function candidateKey(slotId: string, strictness: Strictness, uniqueSamples = false): string {
+  return `${slotId}:${strictness}${uniqueSamples ? ':unique' : ''}`;
 }
 
 /** Handoff §5.3–5.4: substitutions (no transposition) rank before any

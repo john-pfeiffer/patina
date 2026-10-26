@@ -16,12 +16,19 @@ never looped; retrigger = restart the render from its start on every step of
 the division, with per-step gate, velocity, probability and beat offset. The
 set bus (Density comp; Space send when on) applies to the full mix only.
 
-Kinds:
-  * full  → `<name>_full.wav` at `sample_rate`
-  * stems → one full-length, time-aligned `<name>_slot<idx>_<chord>.wav` per slot
-  * kit   → `<name>_kit/<idx>_<chord>.wav` (the conformed WAVs copied as they are)
+Kinds (`<take>` is `<name>_tNN`, see below):
+  * full  → `<take>_full.wav` at `sample_rate`
+  * stems → one full-length, time-aligned `<take>_slot<idx>_<chord>.wav` per slot
+  * kit   → `<take>_kit/<idx>_<chord>.wav` (the conformed WAVs copied as they are)
             + `patine.json` with chord, key, tempo, beat markers and deltas
-  * midi  → `<name>.mid`, one track, chord notes from `theory.chord_midi_notes`
+  * midi  → `<take>.mid`, one track, chord notes from `theory.chord_midi_notes`
+
+Takes. Exports never overwrite: every export of a progression into a folder
+gets the next free take number (`Test_Prog_t01_full.wav`, `Test_Prog_t02_full.wav`
+after a reroll, …) and writes `<take>.json`, a record of what was exported
+(chords, regions, sample paths, bounds, transposition, set settings, deltas)
+so a take can be found again or rebuilt. `ExportJob.overwrite=True` restores
+the fixed names (`<name>_full.wav`) for scripted use.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ import logging
 import re
 import shutil
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -65,20 +73,111 @@ class ExportJob:
     loops: int = 1
     sample_rate: int = 48000
     seed: int | None = None                   # for probability steps
+    sample_paths: dict[str, str] = field(default_factory=dict)  # sample_id → source path, for the record
+    take: int | None = None                   # None: next free take in out_dir
+    overwrite: bool = False                   # fixed `<name>_full.wav` names, no take, no record
+
+
+@dataclass
+class ExportResult:
+    files: list[Path]
+    take: int | None
+    prefix: str
+
+
+TAKE_RE = re.compile(r"^(?P<base>.+?)_t(?P<n>\d{2,})(?:[_.]|$)")
+
+
+def next_take(out_dir: Path, base: str) -> int:
+    """The first take number not used by any file or folder `<base>_tNN…` in `out_dir`."""
+    used = 0
+    try:
+        names = [p.name for p in Path(out_dir).iterdir()]
+    except OSError:
+        names = []
+    for name in names:
+        m = TAKE_RE.match(name)
+        if m and m.group("base") == base:
+            used = max(used, int(m.group("n")))
+    return used + 1
 
 
 def export_progression(job: ExportJob) -> list[Path]:
+    """Files written, the take record last (none for `overwrite` exports)."""
+    return export_take(job).files
+
+
+def export_take(job: ExportJob) -> ExportResult:
     out_dir = Path(job.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    base = _slug(job.progression.name)
+    if job.overwrite:
+        take: int | None = None
+        prefix = base
+    else:
+        take = job.take if job.take is not None else next_take(out_dir, base)
+        prefix = f"{base}_t{take:02d}"
     if job.kind == "full":
-        return [_export_full(job, out_dir)]
-    if job.kind == "stems":
-        return _export_stems(job, out_dir)
-    if job.kind == "kit":
-        return _export_kit(job, out_dir)
-    if job.kind == "midi":
-        return [_export_midi(job, out_dir)]
-    raise ValueError(f"unknown export kind {job.kind!r}")
+        files = [_export_full(job, out_dir, prefix)]
+    elif job.kind == "stems":
+        files = _export_stems(job, out_dir, prefix)
+    elif job.kind == "kit":
+        files = _export_kit(job, out_dir, prefix, take)
+    elif job.kind == "midi":
+        files = [_export_midi(job, out_dir, prefix)]
+    else:
+        raise ValueError(f"unknown export kind {job.kind!r}")
+    if take is not None and job.kind != "kit":
+        files.append(_write_take_record(job, out_dir, prefix, take, files))
+    return ExportResult(files=files, take=take, prefix=prefix)
+
+
+def take_record(job: ExportJob, take: int | None, files: list[Path]) -> dict:
+    """What this export was made from: enough to find or rebuild it later."""
+    bpm = _session_bpm(job)
+    slots = []
+    for slot in sorted(job.progression.slots, key=lambda s: s.idx):
+        region = job.regions.get(slot.region_id or "")
+        slots.append({
+            "index": slot.idx,
+            "chord": slot.chord_symbol,
+            "roman": slot.roman,
+            "length_beats": slot.length_beats,
+            "pattern": slot.pattern.model_dump(),
+            "transpose_semitones": slot.transpose_semitones,
+            "locked": slot.locked,
+            "region_id": slot.region_id,
+            "sample_id": region.sample_id if region is not None else None,
+            "sample_path": job.sample_paths.get(region.sample_id) if region is not None else None,
+            "start_s": region.start_s if region is not None else None,
+            "end_s": region.end_s if region is not None else None,
+            "source_chord": region.chord_symbol if region is not None else None,
+            "deltas": job.deltas.get(slot.id),
+        })
+    return {
+        "patine": "take",
+        "name": job.progression.name,
+        "take": take,
+        "kind": job.kind,
+        "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "key": job.progression.key,
+        "tempo": bpm,
+        "loops": int(job.loops),
+        "set": {
+            "name": job.set_.name,
+            "anchor_region_id": job.set_.anchor_region_id,
+            "tonal_settings": job.set_.tonal_settings.model_dump(),
+            "temporal_settings": job.set_.temporal_settings.model_dump(),
+        },
+        "slots": slots,
+        "files": [f.name for f in files],
+    }
+
+
+def _write_take_record(job: ExportJob, out_dir: Path, prefix: str, take: int, files: list[Path]) -> Path:
+    path = out_dir / f"{prefix}.json"
+    path.write_text(json.dumps(take_record(job, take, files), indent=2), encoding="utf-8")
+    return path
 
 
 # --- helpers --------------------------------------------------------------------------
@@ -235,23 +334,23 @@ def _apply_bus(job: ExportJob, mix: np.ndarray, slots_audio: list[np.ndarray], s
 
 # --- kinds ---------------------------------------------------------------------------------
 
-def _export_full(job: ExportJob, out_dir: Path) -> Path:
+def _export_full(job: ExportJob, out_dir: Path, prefix: str) -> Path:
     sr = int(job.sample_rate)
     slots_audio, pass_frames, _, channels = _timeline(job, sr)
     one_pass = np.concatenate(slots_audio, axis=1) if slots_audio else np.zeros((channels, 0), np.float32)
     mix = _loop(one_pass, job.loops)
     mix = _apply_bus(job, mix, slots_audio, sr)
-    path = out_dir / f"{_slug(job.progression.name)}_full.wav"
+    path = out_dir / f"{prefix}_full.wav"
     write_wav(path, mix, sr)
     return path
 
 
-def _export_stems(job: ExportJob, out_dir: Path) -> list[Path]:
+def _export_stems(job: ExportJob, out_dir: Path, prefix: str) -> list[Path]:
     sr = int(job.sample_rate)
     slots_audio, pass_frames, _, channels = _timeline(job, sr)
     files: list[Path] = []
     pos = 0
-    base = _slug(job.progression.name)
+    base = prefix
     for slot, audio in zip(sorted(job.progression.slots, key=lambda s: s.idx), slots_audio, strict=False):
         one_pass = np.zeros((channels, pass_frames), dtype=np.float32)
         one_pass[:, pos:pos + audio.shape[1]] = audio
@@ -285,9 +384,9 @@ def _beat_markers(region: Region | None, slot: Slot, render_path: str | None, bp
     return markers
 
 
-def _export_kit(job: ExportJob, out_dir: Path) -> list[Path]:
+def _export_kit(job: ExportJob, out_dir: Path, prefix: str, take: int | None) -> list[Path]:
     bpm = _session_bpm(job)
-    kit_dir = out_dir / f"{_slug(job.progression.name)}_kit"
+    kit_dir = out_dir / f"{prefix}_kit"
     kit_dir.mkdir(parents=True, exist_ok=True)
     files: list[Path] = []
     entries: list[dict] = []
@@ -315,11 +414,13 @@ def _export_kit(job: ExportJob, out_dir: Path) -> list[Path]:
         entries.append(entry)
     meta = {
         "name": job.progression.name,
+        "take": take,
         "key": job.progression.key,
         "tempo": bpm,
         "set": job.set_.name,
         "anchor_region_id": job.set_.anchor_region_id,
         "slots": entries,
+        "record": take_record(job, take, files),
     }
     meta_path = kit_dir / "patine.json"
     meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -336,7 +437,7 @@ def slot_midi_notes(slot: Slot) -> list[int]:
     return chord_midi_notes(chord)
 
 
-def _export_midi(job: ExportJob, out_dir: Path) -> Path:
+def _export_midi(job: ExportJob, out_dir: Path, prefix: str) -> Path:
     bpm = _session_bpm(job)
     mid = mido.MidiFile(ticks_per_beat=MIDI_TICKS_PER_BEAT)
     track = mido.MidiTrack()
@@ -358,6 +459,6 @@ def _export_midi(job: ExportJob, out_dir: Path) -> Path:
             for i, n in enumerate(notes):
                 track.append(mido.Message("note_off", note=n, velocity=0, time=ticks if i == 0 else 0))
     track.append(mido.MetaMessage("end_of_track", time=pending))
-    path = out_dir / f"{_slug(job.progression.name)}.mid"
+    path = out_dir / f"{prefix}.mid"
     mid.save(str(path))
     return path

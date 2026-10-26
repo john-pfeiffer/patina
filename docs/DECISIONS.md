@@ -131,3 +131,95 @@ after `tauri build` and calls `/health` on all three platforms.
   every region and slot but strictness ignores it.
 - **Python ≥ 3.12** for the sidecar (librosa 1.0 requires it; python-stretch
   ships abi3 wheels from 3.12).
+- **The transport clock needs `worker-src blob:` in the CSP.** Tone.js ticks its
+  Transport from a Web Worker built from a `blob:` URL and only falls back to
+  `setTimeout` when the constructor throws. A webview that refuses the worker
+  asynchronously (the Tauri CSP did, on the packaged macOS build) leaves a
+  transport whose position advances while nothing scheduled on it fires:
+  solo audition and export worked, slot playback was silent, and the position
+  ran past the loop end (tracker #35). Both policies now allow blob workers,
+  the engine probes a blob worker at startup and watches for ticks after
+  Play, switching Tone's `clockSource` to `timeout` when they never come
+  (`apps/desktop/src/audio/clock.ts`), and Preferences › Audio shows the clock
+  state with three test buttons (tone direct, tone through the bus, clicks on
+  the clock) so "no sound" can be bisected in one click. The engine is also
+  rendered offline in headless Chromium by `pnpm test:browser`.
+- **The engine keeps playing a stale render.** `ensure_render` already returned
+  the last good URL while a new key renders; the UI dropped it unless the
+  status was `ready`. It now plays whatever URL the status carries for the
+  slot's region (`renderPathFor`), as §2 of the handoff asks.
+- **Output device selection is Chromium-only.** `AudioContext.setSinkId` and
+  `audiooutput` enumeration exist on WebView2, not on WKWebView, so on macOS
+  Preferences › Audio reports the system output and says where to change it
+  rather than offering a picker that does nothing.
+- **Chord recall: harmonic chroma, a structure gate, a one-beat observation
+  window, a whole-span fallback and the `5` quality.** Samples came back with
+  no regions for three reasons: a broadband floor (drums, noise, reverb) of a
+  third of the chord's level made the old flatness gate call every frame
+  "no chord"; a melody or arpeggio was decoded one chord per note and then
+  merged away; and a file whose frames all decoded as no-chord was simply
+  dropped. The chord chroma is now folded from the harmonic part of the CQT
+  (`librosa.decompose.hpss`, 3-frame × 31-sub-bin kernels; the full mix still
+  feeds busyness and the register centroid), the no-chord state scores
+  `0.45 + 0.55 × max(silence, no_structure)` where `no_structure` is low when
+  the best maj/min template stands out from the median fit by 0.16 or more
+  (noise, drums and rumble stay below 0.14), the HMM sees chroma averaged over
+  about one beat (3–9 frames) with stickiness of two beats, an extended
+  quality is only allowed when each tone it adds stands 1.4× above the floor
+  of the unused pitch classes (a four-note template otherwise wins under
+  drums by covering more floor), and a file that still decodes as nothing
+  gets one region over its longest tonal span from the floor-subtracted mean
+  chroma, capped at confidence 0.5 so it ranks behind decoded regions. A bare
+  root or root+fifth is reported as quality `5` instead of an invented third;
+  `C5` matches any chord on C at `function`/`two_tones` strictness, parses
+  from typed progressions and renders as `I5`. `scripts/eval_chords.py`
+  measures the share of files with at least one region on a real folder,
+  before (`--legacy`) and after.
+- **Reanalysis keeps ids.** `ANALYSIS_VERSION` is 2; samples analysed by an
+  older version are re-queued at startup and on re-ingest. A re-run matches
+  new regions to old ones by temporal overlap and updates them in place, so
+  set membership, the anchor and slot assignments survive; any region the
+  user has edited becomes `source: user` and is never re-cut. Whole-file
+  onsets are now stored on the sample (schema v2) so a region can be
+  re-measured and its transient edited without re-running the file.
+- **Library roots scan; they never delete.** A root is a folder (a Splice
+  library) the sidecar walks recursively, skipping dot files and folders and
+  macOS `._` sidecars. New files are indexed and analysed in the background at
+  low priority; files whose size or mtime changed are re-analysed; files that
+  vanished are marked `missing` and un-marked when they return. Removing a
+  root keeps its samples as loose files unless asked to delete them, and
+  re-adding the folder re-adopts them. Every root is rescanned when the
+  sidecar starts (`scan_on_startup`). Analysis can be paused from
+  Preferences: the worker parks analysis jobs and keeps rendering and
+  exporting. Duplicate detection stays by path; the hash is stored for the
+  render cache, and two copies of one file are two samples on purpose.
+- **The region editor edits the region, and the region becomes the user's.**
+  Trimming a region or moving its transient in the editor (opened from a
+  library row or from the slot that plays it) writes the region itself, so
+  every set and slot using it follows; the alternative, a per-slot trim, would
+  have meant a second render variant per region. The snap point is stored as
+  `user_overrides.snap_s` (absolute seconds), which the temporal layer takes
+  over the detected first onset and which is part of the render cache key
+  through the overrides. "Save as new" keeps the original and adds the draft as
+  a user region (assigned to the slot when opened from one). Any edited region
+  is marked `source: user` and a rescan never re-cuts it.
+- **Workspace layout instead of three equal columns.** The handoff's four
+  panes stay, arranged as a Library sidebar (collapsible to a rail,
+  resizable), the Progression as the centre with the candidate panel docked
+  beside the slots while a slot is selected, a Set inspector sidebar on the
+  right, and a two-row Transport (transport, then export) whose engine, event
+  and queue readouts fold into chips with tooltips and whose job list sits
+  behind a `jobs` button. Type is 13 px with 6–10 px padding; a region's
+  tonal measurements and a slot's pattern editor sit behind disclosures so a
+  row reads as one line; Preferences › Appearance has a UI scale (page zoom,
+  85–140 %) and the sidebar toggles. Layout and scale persist in `patine.ui`.
+- **`develop` is the default branch; `main` is release-only and self-healing.**
+  GitHub's compare page, its "Compare & pull request" banner and new Claude
+  Code sessions all start from the default branch, which is how a feature PR
+  ended up targeting `main`. The rulesets in `.github/rulesets/` already
+  blocked that merge through the required `Release source` check; the check
+  now also retargets such a PR at `develop` and leaves one comment, so the
+  mistake corrects itself instead of waiting on a person, and fails only when
+  the PR cannot be edited (a fork). Pushes to `jp/**` branches (Claude Code's
+  cloud sessions) run CI like the other feature prefixes, and the pull
+  request template repeats the base rule where PRs are written.

@@ -48,6 +48,12 @@ class AnalysisOptions:
     beat_tracker: str = "auto"            # 'auto' | 'librosa' | 'beat_this'
     min_region_beats: float = 1.0         # §4.5 merge segments shorter than one beat
     models_dir: str | Path | None = None  # where learned weights live (ARCHITECTURE.md: <data dir>/models)
+    # Recall controls (chords.py module docstring). Each can be switched off for A/B runs.
+    hpss: bool = True                     # chord chroma from the harmonic part of the CQT
+    window_beats: float = 1.0             # observations averaged over about one beat (0 = off)
+    expected_chord_beats: float = 2.0     # HMM stickiness tied to tempo (0 = fixed 1.5 s)
+    no_chord_floor: float = chords.NO_CHORD_FLOOR
+    fallback: bool = True                 # whole-span fallback when nothing decodes
 
 
 @dataclass
@@ -55,7 +61,7 @@ class RegionResult:
     start_s: float
     end_s: float
     chord_root: str | None            # 'C'..'B' sharps, None when no chord
-    chord_quality: str | None         # one of theory.ANALYSIS_QUALITIES
+    chord_quality: str | None         # one of theory.REPORTED_QUALITIES
     bass_note: str | None
     chord_confidence: float
     key_context: str | None           # 'F# minor'
@@ -64,6 +70,7 @@ class RegionResult:
     busyness: float                   # 0..1
     register_centroid_hz: float
     metrics: TonalMetrics
+    recovered: bool = False           # labelled by the whole-span fallback, not decoded
 
 
 @dataclass
@@ -81,6 +88,7 @@ class AnalysisContext:
     chord_frames: list[tuple[str | None, str | None, float]] = field(default_factory=list)
     key_scores: np.ndarray | None = None                      # (24,) whole-file key correlations
     features: ChromaFeatures | None = None                    # full features when still in memory
+    hpss: bool = True                                         # how the chroma was computed
 
 
 @dataclass
@@ -127,7 +135,7 @@ def _region_features(
             return sliced
     mono = to_mono(slice_seconds(y, sr, start_s, end_s))
     mono_a = resample_mono(mono, sr, ANALYSIS_SR)
-    return compute_chroma(mono_a, ANALYSIS_SR, tuning_cents=ctx.tuning_cents)
+    return compute_chroma(mono_a, ANALYSIS_SR, tuning_cents=ctx.tuning_cents, hpss=ctx.hpss)
 
 
 def _key_context_for(ctx: AnalysisContext, feats: ChromaFeatures, start_s: float, end_s: float) -> str | None:
@@ -160,19 +168,28 @@ def _resolve_chord(
         root_pc, _ = parse_note(chord_root)
     base_quality = "maj"
     posterior = 1.0
+    cap = 1.0
+    user_root = root_pc is not None
     if root_pc is None:
         frames = chords.estimate_frame_chords(feats, chords.TemplateBackend())
         dom = chords.dominant_chord(frames)
         if dom is None:
-            if chord_quality is not None:
-                return None, chord_quality, None, 0.0
-            return None, None, None, 0.0
-        root_pc, base_quality, posterior = dom
+            # Nothing decoded: the mean chroma can still name a root (a pluck,
+            # a pad under noise); capped like the whole-file fallback.
+            hyp = chords.mean_chord_hypothesis(feats, 0, feats.n_frames)
+            if hyp is None:
+                if chord_quality is not None:
+                    return None, chord_quality, None, 0.0
+                return None, None, None, 0.0
+            root_pc, base_quality, _fit, _margin = hyp
+            posterior, cap = 0.0, chords.FALLBACK_MAX_CONFIDENCE
+        else:
+            root_pc, base_quality, posterior = dom
     root_pc, quality, bass, conf, _fit = chords.label_segment(
         feats, 0, feats.n_frames, root_pc, base_quality,
-        posterior=posterior, quality_override=chord_quality,
+        posterior=posterior, quality_override=chord_quality, allow_reroot=not user_root,
     )
-    return pc_name(root_pc), quality, pc_name(bass), conf
+    return pc_name(root_pc), quality, pc_name(bass), min(conf, cap)
 
 
 def _measure(
@@ -266,18 +283,38 @@ def analyze_decoded(
 
     # chroma
     _report(progress, 0.42, "Computing chroma")
-    feats = compute_chroma(chord_source, sr_a, tuning_cents=tuning_cents)
-    feats_mix = feats if chord_source is mono_a else compute_chroma(mono_a, sr_a, tuning_cents=tuning_cents)
+    feats = compute_chroma(chord_source, sr_a, tuning_cents=tuning_cents, hpss=opts.hpss)
+    feats_mix = feats if chord_source is mono_a else compute_chroma(mono_a, sr_a, tuning_cents=tuning_cents, hpss=opts.hpss)
 
     # §4.5 chords
     _report(progress, 0.55, "Estimating chords")
-    backend = chords.get_backend(opts.chord_model, None if opts.models_dir is None else str(opts.models_dir))
-    frames = chords.estimate_frame_chords(feats, backend)
+    backend = chords.get_backend(
+        opts.chord_model, None if opts.models_dir is None else str(opts.models_dir), no_chord_floor=opts.no_chord_floor
+    )
+    beat_period_s = 60.0 / tempo_result.bpm if tempo_result.bpm else None
+    window = chords.observation_window_frames(
+        feats.hop_s, beat_period_s, tempo_result.confidence, window_beats=opts.window_beats
+    )
+    expected_s = (
+        chords.expected_chord_seconds(beat_period_s, tempo_result.confidence, beats=opts.expected_chord_beats)
+        if opts.expected_chord_beats > 0 else 1.5
+    )
+    frames = chords.estimate_frame_chords(feats, backend, expected_chord_s=expected_s, window_frames=window)
     min_region_s = _min_region_seconds(tempo_result.bpm, opts.min_region_beats)
     segments = chords.segment_chords(
         frames, feats, min_duration_s=min_region_s, onsets=onsets,
-        beats=beats, beat_period_s=(60.0 / tempo_result.bpm if tempo_result.bpm else None),
+        beats=beats, beat_period_s=beat_period_s,
     )
+    recovered = False
+    if not segments and opts.fallback:
+        fb = chords.fallback_segment(
+            frames, feats, onsets=onsets, beats=beats, beat_period_s=beat_period_s, min_region_s=min_region_s
+        )
+        if fb is not None:
+            segments = [fb]
+            recovered = True
+            log.info("%s: nothing decoded; recovered one %s span %.2f-%.2f s",
+                     name, pc_name(fb.root) + fb.quality, fb.start_s, fb.end_s)
 
     downbeats = tempo_result.downbeats
     if not downbeats and tempo_result.backend == "librosa":
@@ -307,6 +344,7 @@ def analyze_decoded(
         chord_frames=chord_frames,
         key_scores=key_scores,
         features=feats_mix,
+        hpss=opts.hpss,
     )
 
     # §4.7–4.8 per region
@@ -315,11 +353,13 @@ def analyze_decoded(
     for i, seg in enumerate(segments):
         _report(progress, 0.72 + 0.2 * i / n_seg, f"Measuring region {i + 1}/{len(segments)}")
         region_feats = _region_features(audio.y, audio.sr, seg.start_s, seg.end_s, ctx)
-        regions.append(_measure(
+        region = _measure(
             audio.y, audio.sr, seg.start_s, seg.end_s, ctx, region_feats,
             chord_root=pc_name(seg.root), chord_quality=seg.quality,
             bass_note=pc_name(seg.bass), chord_confidence=seg.confidence,
-        ))
+        )
+        region.recovered = recovered
+        regions.append(region)
 
     # §4.8 whole file
     _report(progress, 0.93, "Measuring file")

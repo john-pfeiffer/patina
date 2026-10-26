@@ -26,6 +26,8 @@ export type TempoFeel = 'quarter' | 'eighth' | 'half';
 
 export interface UserOverrides {
   keep_preroll: boolean;
+  /** Snap point chosen in the region editor (absolute seconds); null = detected first onset. */
+  snap_s: number | null;
   nudge_ms: number;
   warp_markers: WarpMarker[];
   warp_strength: number | null;
@@ -76,6 +78,11 @@ export interface Pattern {
 
 export type RegionSource = 'analysis' | 'user';
 
+/** Note names the sidecar reports (sharps). */
+export const NOTE_NAMES: readonly string[] = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+/** Qualities a region can carry: the analyser's eight plus the bare root. */
+export const ANALYSIS_QUALITIES_UI: readonly string[] = ['maj', 'min', '7', 'm7', 'maj7', 'dim', 'sus2', 'sus4', '5'];
+
 export interface Region {
   id: string;
   sample_id: string;
@@ -97,13 +104,19 @@ export interface Region {
   source: RegionSource;
 }
 
-export type AnalysisStatus = 'pending' | 'running' | 'done' | 'failed';
+/** `missing`: the file was not found at the last scan of its root. */
+export type AnalysisStatus = 'pending' | 'running' | 'done' | 'failed' | 'missing';
 
 export interface Sample {
   id: string;
   path: string;
   hash: string;
   name: string;
+  /** Scanned library root this file came from, and its path inside it; null for files added one by one. */
+  root_id: string | null;
+  rel_path: string | null;
+  mtime: number | null;
+  size: number | null;
   duration: number | null;
   sample_rate: number | null;
   channels: number | null;
@@ -113,6 +126,8 @@ export interface Sample {
   bpm_confidence: number | null;
   beats: number[];
   downbeats: number[];
+  /** Whole-file transients (§4.4), seconds. */
+  onsets: number[];
   key_estimate: string | null;
   key_confidence: number | null;
   metrics: TonalMetrics | null;
@@ -212,6 +227,9 @@ export interface RenderStatus {
 export interface Candidate {
   region: Region;
   sample_name: string;
+  sample_id: string;
+  /** Other slots of this progression (1-based) whose region comes from the same sample. */
+  used_by_slot_idx: number[];
   score: number;
   transposition_cost: number;
   timbral_distance: number;
@@ -305,6 +323,13 @@ export interface RerollRequest {
   amount: number;
   strictness: Strictness;
   seed?: number;
+  /** No two slots on regions of the same source sample (relaxed with a warning when impossible). */
+  unique_samples?: boolean;
+}
+
+export interface RerollResponse {
+  progression: Progression;
+  warnings: string[];
 }
 
 export interface ParseRequest {
@@ -344,6 +369,8 @@ export interface ExportRequest {
   kind: ExportKind;
   out_dir: string;
   loops: number;
+  /** Exports are numbered takes that never overwrite; true restores the fixed `<name>_full.wav` names. */
+  overwrite?: boolean;
 }
 
 export interface SidecarInfo {
@@ -357,7 +384,11 @@ export interface SidecarInfo {
 
 export interface Peaks {
   bins: number;
+  /** Whole-file duration, seconds. */
   duration: number;
+  /** Window the peaks cover. */
+  start: number;
+  end: number;
   peaks: number[];
 }
 
@@ -368,6 +399,47 @@ export interface SampleUpdatedEvent {
   analysis_status: AnalysisStatus;
   analysis_progress: number;
   message: string | null;
+}
+
+export type RootStatus = 'idle' | 'scanning' | 'error';
+
+/** A folder the library scans recursively (a Splice library, a pack folder). */
+export interface LibraryRoot {
+  id: string;
+  path: string;
+  name: string;
+  added_at: string;
+  last_scan_at: string | null;
+  status: RootStatus;
+  file_count: number;
+  error: string | null;
+}
+
+export interface LibraryRootCreate {
+  path: string;
+  name?: string;
+}
+
+export interface Settings {
+  analysis_paused: boolean;
+  analysis_hpss: boolean;
+  analysis_window_beats: number;
+  analysis_fallback: boolean;
+  scan_on_startup: boolean;
+}
+
+export type SettingsPatch = Partial<Settings>;
+
+export interface RootUpdatedEvent {
+  root_id: string;
+  status: RootStatus | 'removed';
+  file_count?: number;
+  error?: string | null;
+  last_scan_at?: string | null;
+  message?: string;
+  scanned?: number | null;
+  total?: number | null;
+  removed_samples?: number;
 }
 
 export interface SampleRemovedEvent {
@@ -390,6 +462,8 @@ export interface SidecarEventMap {
   'set.updated': SetUpdatedEvent;
   'render.updated': RenderStatus;
   'job.updated': Job;
+  'root.updated': RootUpdatedEvent;
+  'settings.updated': Settings;
 }
 
 export type SidecarEventName = keyof SidecarEventMap;
@@ -400,4 +474,6 @@ export const SIDECAR_EVENT_NAMES: readonly SidecarEventName[] = [
   'set.updated',
   'render.updated',
   'job.updated',
+  'root.updated',
+  'settings.updated',
 ];

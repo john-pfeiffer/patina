@@ -112,3 +112,27 @@ def test_midi_notes_voicing():
     notes = t.chord_midi_notes(t.parse_chord_symbol("C/E"), octave=4)
     assert notes[0] == 52
     assert notes[1:] == [60, 64, 67]
+
+
+def test_bare_root_quality_five():
+    from patine.theory import (
+        Chord,
+        chord_to_roman,
+        matches,
+        parse_chord_symbol,
+        parse_key,
+        substitution_label,
+    )
+
+    c5 = parse_chord_symbol("C5")
+    assert c5 == Chord(0, "5")
+    assert c5.pitch_classes == {0, 7}
+    cm = parse_chord_symbol("Cm")
+    assert matches(c5, cm, parse_key("C minor"), "function")
+    assert matches(c5, cm, None, "two_tones")
+    assert matches(parse_chord_symbol("C"), c5, None, "two_tones")
+    assert not matches(c5, cm, None, "exact")
+    assert not matches(parse_chord_symbol("G5"), cm, None, "function")
+    assert chord_to_roman(c5, parse_key("C major")) == "I5"
+    assert substitution_label(c5, cm, None) == "bare root"
+    assert c5.symbol() == "C5"

@@ -3,14 +3,23 @@ name: Release source
 # Pull requests into main may only come from develop (a release) or a
 # hotfix/* branch. The main ruleset requires this check, which is how the
 # feature → develop → main path is enforced; GitHub rulesets cannot
-# restrict a PR's source branch on their own. It also runs for PRs into
-# develop (always passing) and on base-branch edits, so retargeting a PR
-# from main to develop turns the check green instead of leaving a stale
-# failure on the commit.
+# restrict a PR's source branch on their own.
+#
+# A PR into main from any other branch is retargeted at develop and gets one
+# comment saying so. (GitHub's compare page defaults to the repository's
+# default branch, which is how such PRs usually appear.) The base change
+# fires `edited`, which re-runs this check against develop and turns it
+# green. When the PR cannot be edited (a fork, or a token without
+# pull-request write access) the check fails as before, with the same
+# message.
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
     branches: [main, develop]
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   release-source:
@@ -19,6 +28,9 @@ jobs:
     steps:
       - name: Check source against base
         env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
           BASE_REF: ${{ github.base_ref }}
           HEAD_REF: ${{ github.head_ref }}
         run: |
@@ -27,6 +39,16 @@ jobs:
             exit 0
           fi
           case "$HEAD_REF" in
-            develop|hotfix/*) echo "ok: release/hotfix into main from $HEAD_REF" ;;
-            *) echo "::error::Pull requests into main must come from develop or hotfix/*, not '$HEAD_REF'. Retarget this PR at develop."; exit 1 ;;
+            develop|hotfix/*)
+              echo "ok: release/hotfix into main from $HEAD_REF"
+              exit 0 ;;
           esac
+          if gh pr edit "$PR" --base develop; then
+            msg="Retargeted at \`develop\`: feature work merges into \`develop\` first, and \`main\` only takes release PRs from \`develop\` and \`hotfix/*\`."
+            msg="$msg The \`Release source\` check has re-run against \`develop\`. If the diff now looks wrong, this branch was cut from \`main\`: merge \`develop\` into it."
+            gh pr comment "$PR" --body "$msg" || echo "::warning::retargeted, but the comment could not be posted"
+            echo "::notice::Pull request #$PR targeted main from '$HEAD_REF'; retargeted at develop."
+            exit 0
+          fi
+          echo "::error::Pull requests into main must come from develop or hotfix/*, not '$HEAD_REF'. Retarget this PR at develop."
+          exit 1

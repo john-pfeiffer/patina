@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [develop, main, "feature/**", "fix/**", "chore/**", "hotfix/**", "claude/**"]
+    branches: [develop, main, "feature/**", "fix/**", "chore/**", "hotfix/**", "claude/**", "jp/**"]
   pull_request:
     branches: [develop, main]
 
@@ -45,6 +45,9 @@ jobs:
       - run: node scripts/bump-version.mjs --check
       - run: pnpm --filter @patine/desktop typecheck
       - run: pnpm --filter @patine/desktop test
+      # The playback engine is rendered in headless Chromium (Web Audio).
+      - run: pnpm --filter @patine/desktop exec playwright install --with-deps chromium
+      - run: pnpm --filter @patine/desktop test:browser
       - run: pnpm --filter @patine/desktop build
 
   desktop:

@@ -26,3 +26,8 @@ export function pickAudioFiles(): Promise<string[]> {
 export function pickDirectory(): Promise<string | null> {
   return invoke<string | null>('pick_directory');
 }
+
+/** Native folder picker for a library root (a Splice library, a pack folder). */
+export function pickAudioFolder(): Promise<string | null> {
+  return invoke<string | null>('pick_audio_folder');
+}

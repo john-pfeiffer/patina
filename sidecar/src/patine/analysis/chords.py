@@ -22,19 +22,31 @@ Pipeline
    note is read from the low-register chroma so inversions are visible, and
    `chord_confidence` (0..1) blends the template fit, its margin over the
    runner-up and the HMM posterior.
-5. Boundaries snap to a nearby onset (§4.4) so regions start on the attack."""
+5. Boundaries snap to a nearby onset (§4.4) so regions start on the attack.
+
+Recall. Three things keep tonal samples from coming back with no regions:
+the observations the HMM sees are averaged over about one beat
+(`smooth_observations`), so an arpeggio or a melody outlining a chord reads
+as that chord instead of one chord per note; the no-chord state only wins on
+frames that are both quiet-or-flat *and* not concentrated on a few pitch
+classes (`TemplateBackend.gates`); and when the whole file still decodes as
+no-chord, `fallback_segment` labels its longest tonal span from the mean
+chroma with a capped confidence rather than dropping the file. A bare root
+or root+fifth (a plucked note, a bass line, a power chord) is reported as
+quality "5" (`bare_root_quality`) instead of an invented third."""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 import librosa
 import numpy as np
+from scipy.ndimage import uniform_filter1d
 
 from ..theory import ANALYSIS_QUALITIES, QUALITY_INTERVALS
-from .chroma import CHROMA_COMPRESSION, ChromaFeatures, cosine_similarity
+from .chroma import ChromaFeatures, cosine_similarity
 from .onsets import snap_to_onset
 
 log = logging.getLogger(__name__)
@@ -45,6 +57,37 @@ NO_CHORD = 24
 N_STATES = 25
 
 _EPS = 1e-9
+
+# No-chord score = floor + (1 - floor) * gate. Every ungated frame therefore
+# favours a chord by (best fit - floor) * beta nats; 0.45 lets a dyad or a
+# triad over a heavy floor win while noise still saturates the gate.
+NO_CHORD_FLOOR = 0.45
+# "No structure" gate: the best maj/min template fit minus the median fit over
+# all 24. Noise, drum loops and sub rumble stay below 0.14 (90th percentile
+# per frame), a pad under drums 6 dB louder stays above 0.15 (10th
+# percentile), a single plucked note or a clean chord above 0.4. Spectral
+# flatness cannot tell these apart: it measures the floor, not the tonalness.
+CONTRAST_THRESHOLD = 0.16
+CONTRAST_RANGE = 0.06
+
+# Whole-span fallback (see module docstring).
+FALLBACK_MIN_FIT = 0.60
+FALLBACK_MIN_MARGIN = 0.06
+FALLBACK_MIN_SPAN_S = 0.2
+FALLBACK_GAP_S = 0.5
+FALLBACK_MAX_CONFIDENCE = 0.5
+
+# Bare root rule: no third stronger than this share of the root (on the
+# compressed chroma; a note's 5th harmonic puts 0.27-0.36 there), no sus
+# tone either, and the root among the leading pitch classes.
+BARE_THIRD_RATIO = 0.40
+BARE_ROOT_SHARE = 0.6
+
+# An extended quality (7, m7, maj7, sus2, sus4, dim) is only allowed when each
+# tone it adds to the maj/min triad stands this far above the floor of the
+# pitch classes neither chord uses: under drums or noise a four-note template
+# otherwise beats the triad simply by covering more floor.
+EXTENSION_FLOOR_RATIO = 1.4
 
 
 # --- templates ------------------------------------------------------------------
@@ -97,7 +140,8 @@ class TemplateBackend:
     """Cosine similarity between bass-weighted chroma and maj/min triad
     templates, turned into probabilities with a softmax. The no-chord state
     scores high on silent frames (level far below the file's loud frames) and
-    on flat, noise-like chroma (drums, room tone)."""
+    on frames with no harmonic structure (drums, noise, room tone: no template
+    fits better than the rest)."""
 
     name = "template"
 
@@ -106,11 +150,29 @@ class TemplateBackend:
         *,
         beta: float = 12.0,
         silence_db: float = -40.0,
-        flatness_threshold: float = 0.65,
+        no_chord_floor: float = NO_CHORD_FLOOR,
+        contrast_threshold: float = CONTRAST_THRESHOLD,
+        contrast_range: float = CONTRAST_RANGE,
     ) -> None:
         self.beta = float(beta)
         self.silence_db = float(silence_db)
-        self.flatness_threshold = float(flatness_threshold)
+        self.no_chord_floor = float(no_chord_floor)
+        self.contrast_threshold = float(contrast_threshold)
+        self.contrast_range = float(contrast_range)
+
+    def gates(self, feats: ChromaFeatures) -> tuple[np.ndarray, np.ndarray]:
+        """(silence, no_structure) scores in [0, 1] per frame: quiet frames,
+        and frames where no maj/min template stands out from the rest."""
+        x = feats.weighted.astype(np.float32)
+        t = x.shape[1]
+        if t == 0:
+            return np.zeros(0), np.zeros(0)
+        silence = silence_scores(feats, self.silence_db)
+        xn = x / (np.linalg.norm(x, axis=0) + _EPS)
+        sims = MAJMIN_TEMPLATES @ xn
+        contrast = sims.max(axis=0) - np.median(sims, axis=0)
+        structure = np.clip((self.contrast_threshold - contrast) / self.contrast_range, 0.0, 1.0)
+        return silence, structure
 
     def similarities(self, feats: ChromaFeatures) -> np.ndarray:
         """(25, T) similarity-like scores in [0, 1] before the softmax."""
@@ -121,20 +183,9 @@ class TemplateBackend:
         norms = np.linalg.norm(x, axis=0) + _EPS
         xn = x / norms
         sims = MAJMIN_TEMPLATES @ xn                                   # (24, T)
-        energy = feats.energy.astype(np.float64)
-        ref = float(np.percentile(energy, 95)) if t > 1 else float(energy.max())
-        if ref <= 0.0:
-            level_db = np.full(t, -120.0)
-        else:
-            level_db = 20.0 * np.log10(np.maximum(energy, _EPS) / ref)
-        silence = 1.0 / (1.0 + np.exp(-(self.silence_db - level_db) / 3.0))
-        lin = np.power(x, 1.0 / CHROMA_COMPRESSION)        # flatness on the linear chroma
-        l1 = lin / (lin.sum(axis=0, keepdims=True) + _EPS)
-        geo = np.exp(np.mean(np.log(l1 + 1e-6), axis=0))
-        flatness = geo / (np.mean(l1, axis=0) + _EPS)
-        flat_score = np.clip((flatness - self.flatness_threshold) / 0.25, 0.0, 1.0)
-        n_score = np.maximum(silence, flat_score)
-        sim_n = 0.55 + 0.45 * n_score
+        silence, no_structure = self.gates(feats)
+        n_score = np.maximum(silence, no_structure)
+        sim_n = self.no_chord_floor + (1.0 - self.no_chord_floor) * n_score
         return np.vstack([sims, sim_n[None, :]]).astype(np.float32)
 
     def observation_probabilities(self, feats: ChromaFeatures) -> np.ndarray:
@@ -148,11 +199,28 @@ class TemplateBackend:
         return p
 
 
-def get_backend(chord_model: str = "auto", models_dir: str | None = None) -> ChordBackend:
+def silence_scores(feats: ChromaFeatures, silence_db: float = -40.0) -> np.ndarray:
+    """Per-frame 0..1 "this frame is silent": level against the file's loud
+    frames (95th percentile) through a sigmoid 3 dB wide around `silence_db`."""
+    energy = feats.energy.astype(np.float64)
+    t = energy.size
+    if t == 0:
+        return np.zeros(0)
+    ref = float(np.percentile(energy, 95)) if t > 1 else float(energy.max())
+    if ref <= 0.0:
+        level_db = np.full(t, -120.0)
+    else:
+        level_db = 20.0 * np.log10(np.maximum(energy, _EPS) / ref)
+    return 1.0 / (1.0 + np.exp(-(silence_db - level_db) / 3.0))
+
+
+def get_backend(
+    chord_model: str = "auto", models_dir: str | None = None, *, no_chord_floor: float = NO_CHORD_FLOOR
+) -> ChordBackend:
     """Resolve `AnalysisOptions.chord_model`. 'auto' and any learned name fall
     back to the template backend when the learned model cannot be loaded."""
     if chord_model == "template":
-        return TemplateBackend()
+        return TemplateBackend(no_chord_floor=no_chord_floor)
     try:
         from .learned import LearnedChordBackend
 
@@ -160,10 +228,10 @@ def get_backend(chord_model: str = "auto", models_dir: str | None = None) -> Cho
     except (ImportError, FileNotFoundError) as e:
         level = logging.DEBUG if chord_model == "auto" else logging.WARNING
         log.log(level, "learned chord model unavailable (%s); using template backend", e)
-        return TemplateBackend()
+        return TemplateBackend(no_chord_floor=no_chord_floor)
     except Exception as e:  # noqa: BLE001 - a broken optional model must not sink the analysis
         log.warning("learned chord model failed to load (%s); using template backend", e)
-        return TemplateBackend()
+        return TemplateBackend(no_chord_floor=no_chord_floor)
     return backend
 
 
@@ -222,8 +290,67 @@ class FrameChords:
         return self.posterior[self.states, np.arange(self.states.size)].astype(np.float32)
 
 
-def estimate_frame_chords(feats: ChromaFeatures, backend: ChordBackend, *, expected_chord_s: float = 1.5) -> FrameChords:
-    probs = backend.observation_probabilities(feats)
+def observation_window_frames(
+    hop_s: float,
+    beat_period_s: float | None,
+    bpm_confidence: float,
+    *,
+    window_beats: float = 1.0,
+    min_frames: int = 3,
+    max_frames: int = 9,
+    fallback_s: float = 0.5,
+    min_confidence: float = 0.3,
+) -> int:
+    """Odd number of frames the observations are averaged over: about one
+    beat when the tracker is confident, `fallback_s` otherwise. A symmetric
+    window is 50/50 exactly at a true chord change, so decoded boundaries
+    stay unbiased and the beat snap absorbs the blur. 1 disables smoothing."""
+    if window_beats <= 0:
+        return 1
+    if beat_period_s and beat_period_s > 0 and bpm_confidence >= min_confidence:
+        seconds = window_beats * beat_period_s
+    else:
+        seconds = fallback_s
+    n = int(round(seconds / max(hop_s, 1e-6)))
+    n = max(min_frames, min(max_frames, n))
+    return n if n % 2 == 1 else n + 1
+
+
+def expected_chord_seconds(
+    beat_period_s: float | None,
+    bpm_confidence: float,
+    *,
+    beats: float = 2.0,
+    lo: float = 0.75,
+    hi: float = 3.0,
+    default: float = 1.5,
+    min_confidence: float = 0.3,
+) -> float:
+    """HMM stickiness tied to tempo: a chord is expected to last `beats`."""
+    if beat_period_s and beat_period_s > 0 and bpm_confidence >= min_confidence:
+        return float(np.clip(beats * beat_period_s, lo, hi))
+    return default
+
+
+def smooth_observations(feats: ChromaFeatures, window_frames: int) -> ChromaFeatures:
+    """The chord chroma averaged over `window_frames` (centred boxcar); the
+    other views are untouched, so segmentation and labelling keep the raw
+    frames."""
+    if window_frames <= 1 or feats.n_frames < 2:
+        return feats
+    w = min(int(window_frames), feats.n_frames)
+    smoothed = uniform_filter1d(feats.weighted.astype(np.float32), size=w, axis=1, mode="nearest")
+    return replace(feats, weighted=smoothed.astype(np.float32))
+
+
+def estimate_frame_chords(
+    feats: ChromaFeatures,
+    backend: ChordBackend,
+    *,
+    expected_chord_s: float = 1.5,
+    window_frames: int = 1,
+) -> FrameChords:
+    probs = backend.observation_probabilities(smooth_observations(feats, window_frames))
     a = transition_matrix(feats.hop_s, expected_chord_s)
     states = viterbi_states(probs, a)
     post = posteriors(probs, a)
@@ -348,6 +475,29 @@ class ChordSegment:
         return self.end_s - self.start_s
 
 
+def triad_of(quality: str) -> str:
+    """The maj/min triad an analysis quality is built on."""
+    return "min" if quality in ("min", "m7", "dim", "dim7", "m7b5", "m6") else "maj"
+
+
+def extension_tones_present(
+    mean_chroma: np.ndarray, root: int, quality: str, *, ratio: float = EXTENSION_FLOOR_RATIO
+) -> bool:
+    """Do the tones `quality` adds to its triad stand out from the floor? The
+    floor is the median of the pitch classes neither the triad nor the quality
+    uses; with no floor (clean material) every quality is allowed and the
+    template fit decides as before."""
+    base = triad_of(quality)
+    added = set(QUALITY_INTERVALS[quality]) - set(QUALITY_INTERVALS[base])
+    if not added:
+        return True
+    c = np.asarray(mean_chroma, dtype=np.float64)
+    used = {(root + iv) % 12 for iv in QUALITY_INTERVALS[quality]} | {(root + iv) % 12 for iv in QUALITY_INTERVALS[base]}
+    rest = [c[i] for i in range(12) if i not in used]
+    floor = float(np.median(rest)) if rest else 0.0
+    return all(c[(root + iv) % 12] >= ratio * floor for iv in added)
+
+
 def refine_quality(
     mean_chroma: np.ndarray,
     root: int,
@@ -357,10 +507,14 @@ def refine_quality(
     qualities: tuple[str, ...] = ANALYSIS_QUALITIES,
 ) -> tuple[str, float]:
     """Pick the quality whose template fits the segment's bass-weighted chroma
-    best; stay with the HMM's maj/min unless another quality wins by `margin`.
-    Returns (quality, fit)."""
-    sims = {q: cosine_similarity(mean_chroma, chord_template(root, q)) for q in qualities}
-    base = base_quality if base_quality in sims else ("min" if base_quality in ("min", "m7", "dim") else "maj")
+    best among those whose added tones are really there (see
+    `extension_tones_present`); stay with the HMM's maj/min unless another
+    quality wins by `margin`. Returns (quality, fit)."""
+    allowed = [q for q in qualities if extension_tones_present(mean_chroma, root, q)]
+    sims = {q: cosine_similarity(mean_chroma, chord_template(root, q)) for q in allowed}
+    base = base_quality if base_quality in sims else triad_of(base_quality)
+    if base not in sims:
+        sims[base] = cosine_similarity(mean_chroma, chord_template(root, base))
     best = max(sims, key=sims.get)
     if best != base and sims[best] > sims[base] + margin:
         return best, float(sims[best])
@@ -388,11 +542,12 @@ def estimate_bass(mean_bass_chroma: np.ndarray, root: int, quality: str) -> int:
 
 
 def chord_fit_scores(mean_chroma: np.ndarray, root: int, quality: str) -> tuple[float, float]:
-    """(fit of the chosen chord, margin over the best other maj/min root)."""
+    """(fit of the chosen chord, margin over the best maj/min chord on another
+    root; for a bare root both maj and min of its own root are "own")."""
     fit = cosine_similarity(mean_chroma, chord_template(root, quality))
     xn = mean_chroma / (np.linalg.norm(mean_chroma) + _EPS)
     sims = MAJMIN_TEMPLATES @ xn
-    own = state_index(root, quality)
+    own = [state_index(root, quality)] if quality != "5" else [state_index(root, "maj"), state_index(root, "min")]
     others = np.delete(sims, own)
     margin = float(fit - others.max()) if others.size else 0.0
     return float(fit), margin
@@ -405,6 +560,40 @@ def chord_confidence(fit: float, margin: float, posterior: float) -> float:
     return float(np.clip(0.45 * fit_score + 0.25 * margin_score + 0.30 * posterior, 0.0, 1.0))
 
 
+def bare_root_quality(
+    mean_weighted: np.ndarray,
+    mean_bass: np.ndarray,
+    root: int,
+    *,
+    allow_reroot: bool = False,
+) -> tuple[int, str] | None:
+    """(root, "5") when the segment is a bare root or root+fifth: no third,
+    no sus tone, and the root among the strongest pitch classes. With
+    `allow_reroot` the root may move to the pitch class the "5" template
+    fits best (a C+G dyad scores 1.0 from C and 0.76 from G; the bass chroma
+    breaks the remaining ties)."""
+    c = np.asarray(mean_weighted, dtype=np.float64)
+    if c.size != 12 or float(c.max()) <= _EPS:
+        return None
+    candidates = {int(root)}
+    if allow_reroot:
+        candidates |= {int(i) for i in np.argsort(c)[-3:]}
+    b = np.asarray(mean_bass, dtype=np.float64)
+
+    def score(r: int) -> float:
+        base = cosine_similarity(c, chord_template(r, "5"))
+        return base + (0.05 * b[r] / (b.max() + _EPS) if b.size == 12 and b.max() > _EPS else 0.0)
+
+    best = max(candidates, key=score)
+    third = max(c[(best + 3) % 12], c[(best + 4) % 12])
+    sus = max(c[(best + 2) % 12], c[(best + 5) % 12])
+    if third >= BARE_THIRD_RATIO * c[best] or sus >= BARE_THIRD_RATIO * c[best]:
+        return None
+    if c[best] < BARE_ROOT_SHARE * float(c.max()):
+        return None
+    return best, "5"
+
+
 def label_segment(
     feats: ChromaFeatures,
     f0: int,
@@ -414,9 +603,11 @@ def label_segment(
     *,
     posterior: float = 1.0,
     quality_override: str | None = None,
+    allow_reroot: bool = False,
 ) -> tuple[int, str, int, float, float]:
     """(root, quality, bass, confidence, fit) for frames [f0, f1) given a root
-    hypothesis; the root only changes for the sus2/sus4 enharmonic swap."""
+    hypothesis; the root only changes for the sus2/sus4 enharmonic swap and,
+    with `allow_reroot`, for a bare root whose fifth was taken for the root."""
     seg = feats.slice_frames(f0, f1)
     mean = seg.mean_weighted()
     if quality_override is not None:
@@ -424,6 +615,14 @@ def label_segment(
         fit, margin = chord_fit_scores(mean, root, quality)
     else:
         quality, _ = refine_quality(mean, root, base_quality)
+        # A bare root looks like a sus chord from the wrong root (a G pluck is
+        # "Dsus4" from D), so when the root may move the rule runs regardless
+        # of the refined quality; a real sus or 7th chord has the tones that
+        # make the rule decline.
+        if quality in ("maj", "min") or allow_reroot:
+            bare = bare_root_quality(mean, seg.mean_bass(), root, allow_reroot=allow_reroot)
+            if bare is not None:
+                root, quality = bare
         fit, margin = chord_fit_scores(mean, root, quality)
     bass = estimate_bass(seg.mean_bass(), root, quality)
     if quality_override is None:
@@ -620,3 +819,113 @@ def dominant_chord(frames: FrameChords) -> tuple[int, str, float] | None:
     sel = frames.states == state
     post = float(frames.posterior[state, sel].mean()) if np.any(sel) else 0.0
     return root, quality, post
+
+
+# --- whole-span fallback --------------------------------------------------------------
+
+def tonal_span(
+    silence: np.ndarray,
+    *,
+    gap_frames: int,
+    min_frames: int,
+) -> tuple[int, int] | None:
+    """Longest run of frames that are not silent, bridging silent gaps shorter
+    than `gap_frames`; None when shorter than `min_frames`. For a one-shot this
+    is attack → where the decay crosses the silence level; for a loop, the file."""
+    active = np.asarray(silence) < 0.5
+    if not np.any(active):
+        return None
+    runs: list[list[int]] = []
+    for i, a in enumerate(active.tolist()):
+        if a:
+            if runs and i - runs[-1][1] <= gap_frames:
+                runs[-1][1] = i + 1
+            else:
+                runs.append([i, i + 1])
+    best = max(runs, key=lambda r: r[1] - r[0])
+    if best[1] - best[0] < min_frames:
+        return None
+    return int(best[0]), int(best[1])
+
+
+def mean_chord_hypothesis(
+    feats: ChromaFeatures,
+    f0: int,
+    f1: int,
+    *,
+    min_fit: float = FALLBACK_MIN_FIT,
+    min_margin: float = FALLBACK_MIN_MARGIN,
+) -> tuple[int, str, float, float] | None:
+    """(root, 'maj'|'min', fit, margin) of the maj/min template that fits the
+    energy-weighted mean chroma of frames [f0, f1) best, or None when the fit
+    is weak or no root clearly wins (noise, rumble, clusters)."""
+    seg = feats.slice_frames(f0, f1)
+    if seg.n_frames == 0:
+        return None
+    x = seg.weighted.astype(np.float64)
+    w = x.sum(axis=0)
+    if float(w.sum()) <= _EPS:
+        return None
+    mean = (x * w[None, :]).sum(axis=1) / float(w.sum())
+    # Score the chroma above its floor: drums and noise lift every pitch class
+    # and squeeze the margin between chords sharing two tones.
+    mean = np.maximum(mean - float(np.percentile(mean, 25)), 0.0)
+    if float(mean.max()) <= _EPS:
+        return None
+    xn = mean / (np.linalg.norm(mean) + _EPS)
+    sims = MAJMIN_TEMPLATES @ xn
+    best = int(np.argmax(sims))
+    root, quality = state_label(best)
+    assert root is not None and quality is not None
+    other_roots = [i for i in range(N_CHORD_STATES) if i % 12 != root]
+    margin = float(sims[best] - sims[other_roots].max())
+    if float(sims[best]) < min_fit or margin < min_margin:
+        return None
+    return root, quality, float(sims[best]), margin
+
+
+def fallback_segment(
+    frames: FrameChords,
+    feats: ChromaFeatures,
+    *,
+    silence_db: float = -40.0,
+    onsets: list[float] | None = None,
+    beats: list[float] | None = None,
+    beat_period_s: float | None = None,
+    min_region_s: float = 0.15,
+    gap_s: float = FALLBACK_GAP_S,
+    min_span_s: float = FALLBACK_MIN_SPAN_S,
+) -> ChordSegment | None:
+    """One region for a file that decoded as all no-chord but carries a tonal
+    span (module docstring). Confidence is capped at `FALLBACK_MAX_CONFIDENCE`
+    so a recovered region ranks behind any decoded one."""
+    if feats.n_frames == 0:
+        return None
+    hop_s = feats.hop_s
+    span = tonal_span(
+        silence_scores(feats, silence_db),
+        gap_frames=max(1, int(round(gap_s / hop_s))),
+        min_frames=max(1, int(round(min_span_s / hop_s))),
+    )
+    if span is None:
+        return None
+    f0, f1 = span
+    hyp = mean_chord_hypothesis(feats, f0, f1)
+    if hyp is None:
+        return None
+    root, quality, _fit, _margin = hyp
+    state = state_index(root, quality)
+    post = float(frames.posterior[state, f0:f1].mean()) if frames.posterior.shape[1] >= f1 else 0.0
+    root, quality, bass, conf, fit = label_segment(feats, f0, f1, root, quality, posterior=post, allow_reroot=True)
+    start, end = feats.frame_start_s(f0), feats.frame_end_s(f1 - 1)
+    if onsets or beats:
+        beat_tol = min(0.3, max(0.08, 0.35 * beat_period_s)) if beat_period_s else 0.0
+        starts, ends = _snap_boundaries([start], [end], onsets or [], 1.5 * hop_s, min_region_s * 0.5,
+                                        beats=beats, beat_tol=beat_tol)
+        start, end = starts[0], ends[0]
+    if end <= start:
+        return None
+    return ChordSegment(
+        start_s=float(start), end_s=float(end), frame_start=f0, frame_end=f1,
+        root=root, quality=quality, bass=bass, confidence=min(conf, FALLBACK_MAX_CONFIDENCE), fit=fit,
+    )

@@ -211,3 +211,91 @@ def test_optional_backends_fall_back(caplog):
     assert "beat_this" in messages
     assert [(r.chord_root, r.chord_quality) for r in result.regions] == EXPECTED[:4]
     assert result.detected_bpm == pytest.approx(BPM, rel=0.03)
+
+
+# --- recall: melodic, sparse, short and noisy material -----------------------------------
+
+from test_analysis_synth import (  # noqa: E402
+    arpeggio_signal,
+    chord_hit,
+    melody_signal,
+    noise_loop,
+    oneshot_note,
+    pad_under_drums,
+)
+
+from patine.theory import REPORTED_QUALITIES  # noqa: E402
+
+OPTS = AnalysisOptions(beat_tracker="librosa")
+
+
+def _chords(result):
+    return [(r.chord_root, r.chord_quality) for r in result.regions]
+
+
+def test_monophonic_melody_yields_regions_with_bare_roots():
+    notes = [60, 62, 64, 65, 67, 69, 67, 64]        # C4 D4 E4 F4 G4 A4 G4 E4, one beat each
+    y, total = melody_signal(notes, bpm=100.0)
+    result = analyze_decoded(decoded(y, 22050), options=OPTS)
+    assert len(result.regions) >= 1
+    assert all(r.chord_root in {"C", "D", "E", "F", "G", "A"} for r in result.regions)
+    assert all(r.chord_quality in REPORTED_QUALITIES for r in result.regions)
+    assert any(r.chord_quality == "5" for r in result.regions)
+    covered = sum(r.end_s - r.start_s for r in result.regions)
+    assert covered >= 0.7 * total
+    assert result.key_estimate is not None
+
+
+@pytest.mark.parametrize("root, quality", [(0, "maj"), (9, "min")])
+def test_ringing_arpeggio_reads_as_its_chord(root, quality):
+    y, total = arpeggio_signal(root, quality, bpm=120.0, bars=2, ring_s=0.6)
+    result = analyze_decoded(decoded(y, 22050), options=OPTS)
+    assert result.regions, "arpeggio produced no regions"
+    assert all((r.chord_root, r.chord_quality) == (pc_name(root), quality) for r in result.regions), _chords(result)
+    assert len(result.regions) <= 2
+    covered = sum(r.end_s - r.start_s for r in result.regions)
+    assert covered >= 0.85 * total
+    assert all(r.chord_confidence > 0.4 for r in result.regions)
+
+
+def test_single_pluck_is_a_bare_root_region():
+    y = oneshot_note(55, duration=1.5, decay_s=0.5)     # G3
+    result = analyze_decoded(decoded(y, 22050), options=OPTS)
+    assert len(result.regions) == 1
+    r = result.regions[0]
+    assert (r.chord_root, r.chord_quality) == ("G", "5")
+    assert r.start_s < 0.15 and r.end_s > 0.6
+    assert 0.0 < r.chord_confidence <= 1.0
+
+
+def test_pad_under_loud_drums_keeps_its_chords():
+    y, _ = pad_under_drums(((0, "maj"), (5, "maj")), bpm=120.0, beats_per_chord=4, drum_db=6.0)
+    result = analyze_decoded(decoded(y, 22050), options=OPTS)
+    assert _chords(result) == [("C", "maj"), ("F", "maj")], _chords(result)
+    assert abs(result.regions[1].start_s - 2.0) < 0.3
+    assert all(r.chord_confidence > 0.35 for r in result.regions)
+
+
+@pytest.mark.parametrize("lowpass", [None, 2000.0])
+def test_noise_loops_stay_empty(lowpass):
+    y = noise_loop(4.0, lowpass_hz=lowpass)
+    result = analyze_decoded(decoded(y, 22050), options=OPTS)
+    assert result.regions == []
+
+
+def test_short_chord_hit_is_one_region():
+    y = chord_hit(2, "min", duration=0.8, decay_s=0.4)   # D minor stab
+    result = analyze_decoded(decoded(y, 22050), options=OPTS)
+    assert len(result.regions) == 1
+    r = result.regions[0]
+    assert (r.chord_root, r.chord_quality) == ("D", "min")
+    assert r.end_s - r.start_s >= 0.4
+    assert r.chord_confidence > 0.3
+
+
+def test_fallback_can_be_switched_off():
+    y = oneshot_note(55, duration=1.5, decay_s=0.5)
+    with_fb = analyze_decoded(decoded(y, 22050), options=OPTS)
+    without = analyze_decoded(decoded(y, 22050), options=AnalysisOptions(beat_tracker="librosa", fallback=False))
+    assert len(with_fb.regions) >= len(without.regions)
+    assert all(r.recovered for r in with_fb.regions) or not any(r.recovered for r in without.regions)

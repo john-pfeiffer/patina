@@ -10,6 +10,7 @@
     "build:app": "tauri build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -28,6 +29,8 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.0.0",
+    "@vitest/browser-playwright": "5.0.5",
+    "playwright": "1.63.0",
     "typescript": "^5.9.0",
     "vite": "^8.0.0",
     "vitest": "^5.0.0"

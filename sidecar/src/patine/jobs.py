@@ -62,6 +62,10 @@ class JobWorker:
         self._threads: list[threading.Thread] = []
         self._stop = threading.Event()
         self._n_threads = threads
+        # Paused kinds are parked when dequeued and re-queued on resume, so
+        # the other kinds (renders, exports) keep flowing.
+        self._paused: set[str] = set()
+        self._parked: list[tuple[int, int, str]] = []
 
     # --- lifecycle --------------------------------------------------------------
 
@@ -124,6 +128,26 @@ class JobWorker:
             self._seq += 1
             self._queue.put((priority, self._seq, job_id))
 
+    def pause(self, kind: str) -> None:
+        with self._lock:
+            self._paused.add(kind)
+
+    def resume(self, kind: str) -> None:
+        with self._lock:
+            self._paused.discard(kind)
+            parked, self._parked = self._parked, []
+        for prio, seq, job_id in parked:
+            self._queue.put((prio, seq, job_id))
+
+    def is_paused(self, kind: str) -> bool:
+        with self._lock:
+            return kind in self._paused
+
+    @property
+    def parked_count(self) -> int:
+        with self._lock:
+            return len(self._parked)
+
     def cancel(self, job_id: str) -> Job:
         with self._lock:
             self._cancel.add(job_id)
@@ -174,7 +198,7 @@ class JobWorker:
 
     def _loop(self) -> None:
         while not self._stop.is_set():
-            _, _, job_id = self._queue.get()
+            prio, seq, job_id = self._queue.get()
             if not job_id:
                 continue
             if self.is_cancelled(job_id):
@@ -183,6 +207,10 @@ class JobWorker:
             row = self.db.one("SELECT * FROM jobs WHERE id = ?", (job_id,))
             if row is None or row["status"] != "queued":
                 continue
+            with self._lock:
+                if row["kind"] in self._paused:
+                    self._parked.append((prio, seq, job_id))
+                    continue
             handler = self._handlers.get(row["kind"])
             if handler is None:
                 self.update(job_id, status="failed", error=f"no handler for {row['kind']}")

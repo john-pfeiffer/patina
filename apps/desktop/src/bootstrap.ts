@@ -4,7 +4,7 @@
 import { api, setConnection, type SidecarConnection } from './api/client';
 import { subscribeEvents, type SseState } from './api/events';
 import { discoverSidecar } from './api/sidecar';
-import { engine, type EngineProgram } from './audio/engine';
+import { canSelectOutput, engine, selectOutput, type EngineProgram } from './audio/engine';
 import {
   regionsById,
   selectAnchorRegion,
@@ -15,6 +15,7 @@ import {
   type PatineState,
 } from './store';
 import { errorMessage } from './util/format';
+import { renderPathFor } from './util/renders';
 
 const HEALTH_RETRY_MS = 1000;
 
@@ -36,7 +37,7 @@ export function buildProgram(s: PatineState): EngineProgram | null {
         length_beats: slot.length_beats,
         pattern: slot.pattern,
         wetness: slot.region_id ? (regions.get(slot.region_id)?.metrics?.wetness ?? null) : null,
-        renderPath: render && render.status === 'ready' && render.url && render.region_id === slot.region_id ? render.url : null,
+        renderPath: renderPathFor(render, slot.region_id),
       };
     }),
     density: { enabled: set.tonal_settings.density.enabled, referenceLufs: anchor?.metrics?.loudness_lufs ?? null },
@@ -123,6 +124,12 @@ export function bootstrap(): () => void {
 
   const unsubEngine = engine.subscribe((t) => useStore.getState().setTransport(t));
   engine.onError = (message) => useStore.setState({ lastError: message });
+
+  // Re-apply a chosen output device (Chromium webviews only; see Preferences › Audio).
+  const sink = useStore.getState().ui.audioSinkId;
+  if (sink && canSelectOutput()) {
+    void selectOutput(sink).catch((e: unknown) => useStore.setState({ lastError: `output device: ${errorMessage(e)}` }));
+  }
 
   return () => {
     stopDiscovery();

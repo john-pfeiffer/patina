@@ -68,6 +68,8 @@ export function SetPane() {
   const deltas = useStore((s) => s.deltas);
   const memberRenders = useStore((s) => s.memberRenders);
   const patchSet = useStore((s) => s.patchSet);
+  const layout = useStore((s) => s.ui.layout);
+  const setUi = useStore((s) => s.setUi);
 
   const names = samplesById(samples);
   const bpm = sessionBpm(set);
@@ -87,6 +89,10 @@ export function SetPane() {
       <header className="pane-head">
         <h2>Set</h2>
         <SetPicker />
+        <span className="spacer" />
+        <button type="button" className="disclosure" onClick={() => setUi({ layout: { ...layout, setOpen: false } })} title="hide the set">
+          ▸
+        </button>
       </header>
       {!set ? (
         <div className="pane-body">

@@ -17,7 +17,18 @@ folding boosts leakage until every frame looks flat), but the folded chord
 chroma (`weighted`, `treble`) is square-rooted (`CHROMA_COMPRESSION`): a bass
 playing the root otherwise dominates the vector so much that a 7th or a
 sus tone can no longer be told apart from a plain triad. `bass` and `energy`
-stay linear. All arrays are float32."""
+stay linear. All arrays are float32.
+
+Harmonic chroma (`HPSS`). Drums, clicks, reverb wash and noise put a broadband
+floor under every pitch class, and a floor of a third of the chord's level
+already makes a frame read as "no chord". The chord views (`weighted`,
+`bass`, `energy`) are therefore folded from the *harmonic* part of the CQT:
+a median filter along time keeps what sustains (a 3-frame kernel keeps
+anything two frames long, so 8th notes up to about 160 bpm survive) and a
+median filter along frequency removes what is spread across the spectrum.
+`treble` and `cqt` stay on the full mix: busyness needs the melody's short
+notes and the register centroid describes the whole sound. Playback and the
+tonal measurements never see the separated signal."""
 
 from __future__ import annotations
 
@@ -42,6 +53,12 @@ BASS_WEIGHTS = np.array([1.0, 1.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 TREBLE_WEIGHTS = np.array([0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], dtype=np.float32)
 
 _MIN_SIGNAL_S = 4.0  # pad shorter inputs so the low CQT octaves have room
+
+# Harmonic–percussive separation of the CQT magnitude before folding.
+HPSS = True
+HPSS_TIME_KERNEL = 3      # frames (~280 ms): tones shorter than two frames are not harmonic
+HPSS_FREQ_KERNEL = 31     # sub-bins (0.86 octave at 36/oct): broadband hits are percussive
+HPSS_POWER = 2.0          # soft masks
 
 
 @dataclass
@@ -130,9 +147,11 @@ def compute_chroma(
     *,
     tuning_cents: float = 0.0,
     hop: int = CHROMA_HOP,
+    hpss: bool = HPSS,
 ) -> ChromaFeatures:
     """CQT-based chroma over mono `y` at `sr`, compensated for `tuning_cents` (§4.2)
-    so a detuned file still lands on the right pitch classes."""
+    so a detuned file still lands on the right pitch classes. With `hpss` the
+    chord views come from the harmonic part of the CQT (module docstring)."""
     y = np.ascontiguousarray(y, dtype=np.float32)
     duration = float(y.size) / float(sr)
     min_len = int(_MIN_SIGNAL_S * sr)
@@ -149,16 +168,24 @@ def compute_chroma(
         bins_per_octave=CQT_BINS_PER_OCTAVE,
         tuning=tuning * sub,
     )
-    mag = np.abs(c).astype(np.float32)
-    mag = mag.reshape(N_BINS, sub, mag.shape[1]).sum(axis=1)       # fold sub-bins per semitone
-    if COMPRESSION != 1.0:
-        mag = np.power(mag, COMPRESSION, dtype=np.float32)
+    mag_sub = np.abs(c).astype(np.float32)                           # (N_BINS*sub, T)
+    harm_sub = harmonic_part(mag_sub) if hpss else mag_sub
+
+    def fold_sub(m: np.ndarray) -> np.ndarray:
+        m = m.reshape(N_BINS, sub, m.shape[1]).sum(axis=1)          # fold sub-bins per semitone
+        if COMPRESSION != 1.0:
+            m = np.power(m, COMPRESSION, dtype=np.float32)
+        return m
+
+    mag = fold_sub(mag_sub)
+    harm = fold_sub(harm_sub) if hpss else mag
     n_frames = int(np.floor(duration * sr / hop)) + 1
     n_frames = max(1, min(n_frames, mag.shape[1]))
     mag = mag[:, :n_frames]
+    harm = harm[:, :n_frames]
     times = librosa.frames_to_time(np.arange(n_frames), sr=sr, hop_length=hop)
     freqs = librosa.cqt_frequencies(N_BINS, fmin=FMIN_HZ, bins_per_octave=BINS_PER_OCTAVE, tuning=tuning)
-    weighted = fold_octaves(mag, OCTAVE_WEIGHTS)
+    weighted = fold_octaves(harm, OCTAVE_WEIGHTS)
     energy = weighted.sum(axis=0).astype(np.float32)
     return ChromaFeatures(
         sr=int(sr),
@@ -167,11 +194,22 @@ def compute_chroma(
         cqt=mag,
         freqs=np.asarray(freqs, dtype=np.float64),
         weighted=compress(weighted),
-        bass=fold_octaves(mag, BASS_WEIGHTS),
+        bass=fold_octaves(harm, BASS_WEIGHTS),
         treble=compress(fold_octaves(mag, TREBLE_WEIGHTS)),
         energy=energy,
         duration=duration,
     )
+
+
+def harmonic_part(mag: np.ndarray) -> np.ndarray:
+    """Harmonic component of a (bins, T) magnitude spectrogram (see module
+    docstring). Too few frames for the time kernel: returned unchanged."""
+    if mag.shape[1] < HPSS_TIME_KERNEL or mag.shape[0] < HPSS_FREQ_KERNEL:
+        return mag
+    harm, _ = librosa.decompose.hpss(
+        mag, kernel_size=(HPSS_TIME_KERNEL, HPSS_FREQ_KERNEL), power=HPSS_POWER, margin=1.0
+    )
+    return np.asarray(harm, dtype=np.float32)
 
 
 def compress(chroma: np.ndarray) -> np.ndarray:

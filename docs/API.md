@@ -10,7 +10,10 @@ UI falls back to `http://127.0.0.1:47621` with token `dev`, which is what
 Models are the Pydantic classes in `sidecar/src/patine/models.py`; JSON field
 names are identical. Times are seconds, absolute inside the source file unless
 stated. Pitch classes are note names with sharps (`C#`), qualities are
-`maj min 7 m7 maj7 dim sus2 sus4` (analysis) plus `aug dim7 m7b5 6 m6` (typed).
+`maj min 7 m7 maj7 dim sus2 sus4` (analysis), `5` (a bare root or root+fifth,
+reported where asserting a third would be a guess; it matches any chord on
+its root at `function` and `two_tones` strictness) plus `aug dim7 m7b5 6 m6`
+(typed).
 
 ## Meta
 
@@ -27,22 +30,46 @@ SSE events (`event:` name, `data:` JSON):
 - `set.updated` → `{set_id}` (anchor, settings, membership or bpm changed; renders may be stale)
 - `render.updated` → `RenderStatus`
 - `job.updated` → `Job`
+- `root.updated` → `{root_id, status, file_count, error, last_scan_at, message, scanned, total}` while a root scans; `status: removed` when it is deleted
+- `settings.updated` → `Settings`
 - `ping` every 15 s
 
 ## Library (§5.1)
 
 | Method | Path | Body → Response |
 |---|---|---|
-| POST | `/samples` | `IngestRequest {paths}` → `{samples: Sample[], jobs: Job[]}`. Directories are walked recursively; known paths return the existing sample. Analysis is queued. |
+| POST | `/samples` | `IngestRequest {paths}` → `{samples: Sample[], jobs: Job[]}`. Directories are walked recursively; known paths return the existing sample (re-queued for analysis when it was made by an older `analysis_version`). Analysis is queued. |
 | GET | `/samples` | → `Sample[]` with `regions` filled |
 | GET | `/samples/{id}` | → `Sample` |
 | DELETE | `/samples/{id}` | → 204 |
-| POST | `/samples/{id}/reanalyze` | → `Job` (§4: re-runs only on explicit request) |
-| GET | `/samples/{id}/peaks?bins=800` | → `{bins, duration, peaks: number[]}` mono abs-peak per bin, 0..1 |
-| GET | `/samples/{id}/audio` | → `audio/wav` whole source file |
+| POST | `/samples/{id}/reanalyze` | → `Job` (§4: re-runs only on explicit request; the sidecar also re-queues samples analysed by an older `analysis_version` at startup). A re-run keeps the ids of regions that overlap the old ones (IoU ≥ 0.5), so set membership, the anchor and slot assignments survive; `source: user` regions are never touched. |
+| POST | `/samples/reanalyze` | → `Job[]`: every analysed or failed sample queued again at low priority |
+
+## Library roots and settings
+
+A root is a folder the library scans recursively (a Splice library, a pack
+folder). Hidden files and folders and macOS `._` sidecars are skipped. A scan
+adds new files (queued for analysis at low priority), re-queues files whose
+size or modification time changed, marks files that vanished `missing` and
+clears the mark when they come back; it never deletes. `Sample` carries
+`root_id`, `rel_path`, `mtime` and `size` for files that came from a root.
+
+| Method | Path | Body → Response |
+|---|---|---|
+| GET | `/roots` | → `LibraryRoot[]` |
+| POST | `/roots` | `LibraryRootCreate {path, name?}` → `{root, job}`; the same folder again returns the existing root and a new scan |
+| GET | `/roots/{id}` | → `LibraryRoot` |
+| POST | `/roots/{id}/scan` | → `Job` (kind `scan`; result `{added, changed, missing, unchanged, files}`) |
+| POST | `/roots/scan` | → `Job[]`, every root |
+| DELETE | `/roots/{id}?delete_samples=false` | → 204. With `delete_samples=true` the samples found under it go too; otherwise they stay as loose files |
+| GET | `/settings` | → `Settings {analysis_paused, analysis_hpss, analysis_window_beats, analysis_fallback, scan_on_startup}` |
+| PATCH | `/settings` | `SettingsPatch` → `Settings`. `analysis_paused` parks analysis jobs (renders and exports keep running); the analysis options apply to the next analysis |
+
+| GET | `/samples/{id}/peaks?bins=800&start=&end=` | → `{bins, duration, start, end, peaks: number[]}` mono abs-peak per bin, 0..1, over the whole file or the window `[start, end]` (the region editor zooms this way) |
+| GET | `/samples/{id}/audio?start=&end=` | → `audio/wav` whole source file, or a raw float32 slice when `start`/`end` are given (auditioning a draft selection) |
 | POST | `/samples/{id}/regions` | `RegionCreate` → `Region` (user region; measured immediately) |
 | GET | `/regions/{id}` | → `Region` |
-| PATCH | `/regions/{id}` | `RegionPatch` → `Region`. Changing bounds re-measures; any change invalidates that region's renders (clients will see `render.updated` with `stale`). |
+| PATCH | `/regions/{id}` | `RegionPatch` → `Region`. Changing bounds re-measures (bounds are validated against the file before anything is written); any change invalidates that region's renders (clients will see `render.updated` with `stale`). `user_overrides.snap_s` sets the snap point (transient) by hand, in absolute seconds inside the region, and wins over the detected first onset. Any edit to an analysis region makes it `source: user`, so a reanalysis leaves it alone. |
 | DELETE | `/regions/{id}` | → 204 |
 | GET | `/regions/{id}/audio` | → `audio/wav` raw region slice (solo audition, A/B against conformed) |
 
@@ -72,8 +99,8 @@ SSE events (`event:` name, `data:` JSON):
 | DELETE | `/progressions/{id}` | → 204 |
 | GET | `/progressions/{id}/renders` | → `{slot_id: RenderStatus}` for every assigned slot at that slot's transposition; missing renders are queued |
 | PATCH | `/slots/{id}` | `SlotPatch` → `Slot`. Assigning a `region_id` also adds that region to the progression's set (first member becomes the anchor), so the member list is always every region in use. |
-| GET | `/slots/{id}/candidates?strictness=exact\|function\|two_tones&limit=50` | → `Candidate[]` ranked by §5.2 score; substitutions rank before transpositions |
-| POST | `/progressions/{id}/reroll` | `RerollRequest {amount, strictness, seed?}` → `Progression` (§5.5: unlocked slots only) |
+| GET | `/slots/{id}/candidates?strictness=exact\|function\|two_tones&limit=50&unique_samples=false` | → `Candidate[]` ranked by §5.2 score; substitutions rank before transpositions. Each candidate carries `sample_id` and `used_by_slot_idx` (the other slots playing a region of the same sample); `unique_samples=true` hides those |
+| POST | `/progressions/{id}/reroll` | `RerollRequest {amount, strictness, seed?, unique_samples?}` → `RerollResponse {progression, warnings}` (§5.5: unlocked slots only). With `unique_samples` no two slots get regions of the same source sample: kept slots claim their samples, changing slots are filled in order excluding claimed samples, and a slot with nothing left falls back to the full pool with a warning |
 | POST | `/progressions/import-csv` | `CsvImportRequest {set_id, csv_text}` → `Progression[]`; columns `chords, roman, key, bpm` (header row required, any order) |
 
 ## Theory
@@ -87,7 +114,7 @@ SSE events (`event:` name, `data:` JSON):
 | Method | Path | Body → Response |
 |---|---|---|
 | GET | `/renders/{cache_key}.wav` | → `audio/wav` float32, session sample rate. Served only when `status == ready`. |
-| POST | `/export` | `ExportRequest {progression_id, kind: full\|stems\|kit\|midi, out_dir, loops}` → `Job`; result `{files: string[]}`. Renders that are missing are produced first. `full` writes `<name>_full.wav`, `stems` one WAV per slot, `midi` `<name>.mid`, and `kit` a self-contained folder `<name>_kit/` holding `NN_<chord>.wav` per slot plus `patine.json`. |
+| POST | `/export` | `ExportRequest {progression_id, kind: full\|stems\|kit\|midi, out_dir, loops, overwrite?}` → `Job`; result `{files: string[], take: int\|null, prefix}`. Renders that are missing are produced first. Every export is a numbered take that never overwrites an earlier one: `<name>_tNN_full.wav`, `stems` one `<name>_tNN_slotNN_<chord>.wav` per slot, `midi` `<name>_tNN.mid`, and `kit` a self-contained folder `<name>_tNN_kit/` holding `NN_<chord>.wav` per slot plus `patine.json`. Full, stems and midi also write `<name>_tNN.json`, a record of the take (chords, regions, sample paths, bounds, transposition, set settings, deltas); the kit carries the same record inside its `patine.json`. `overwrite: true` restores the fixed `<name>_full.wav` names. |
 
 ## Jobs
 
@@ -97,7 +124,7 @@ SSE events (`event:` name, `data:` JSON):
 | GET | `/jobs/{id}` | → `Job` |
 | POST | `/jobs/{id}/cancel` | → `Job` |
 
-Job kinds: `analyze` (payload `{sample_id}`), `render` (`{cache_key}`), `export`.
+Job kinds: `scan` (payload `{root_id}`), `analyze` (`{sample_id}`), `render` (`{cache_key}`), `export`.
 
 ## Errors
 

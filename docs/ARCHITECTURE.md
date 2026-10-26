@@ -5,7 +5,7 @@ Read `HANDOFF.md` first; this file says where each part of it lives.
 ```
 patina/
   apps/desktop/            Tauri 2 shell (Rust) + React/TypeScript UI (Vite)
-    src/                   UI — panes, playback engine, API client
+    src/                   UI — panes, playback engine (audio/engine.ts, audio/clock.ts), API client
     src-tauri/             Rust shell: window, sidecar lifecycle, `sidecar_info` command
   sidecar/                 Python engine, package `patine` (uv-managed)
     src/patine/
@@ -46,6 +46,13 @@ The UI loads those into Web Audio (Tone.js) and schedules them with a lookahead
 clock. The UI never waits on DSP: it plays the last good render and marks a
 region *stale* until the new one lands (`render.updated` SSE events).
 
+Tone's clock is a blob-URL Web Worker, which the webview must allow
+(`worker-src blob:` in both CSPs). `audio/clock.ts` probes that worker and
+watches for ticks after Play; when none arrive the engine switches Tone to its
+timeout clock and says so in the transport badge and Preferences › Audio, which
+also carries the test tones and a copyable diagnostics log. `pnpm test:browser`
+renders the engine offline in headless Chromium.
+
 Render cache key = blake2b of (sample hash, region bounds, user overrides,
 temporal settings, session bpm, tonal settings, anchor fingerprint, transpose,
 `RENDER_VERSION`). The anchor fingerprint is a hash of the anchor's metrics,
@@ -54,7 +61,11 @@ queue processes members in playback order, shortest first.
 
 ## Data
 
-SQLite at `<data dir>/library.sqlite3` (WAL). Renders at `<data dir>/renders/`.
+SQLite at `<data dir>/library.sqlite3` (WAL): samples, regions, sets,
+progressions, renders, jobs, plus `library_roots` (folders scanned
+recursively; a sample remembers its root, relative path, size and mtime) and
+`settings` (key/value JSON: analysis options, the analysis pause, scan on
+startup). Renders at `<data dir>/renders/`.
 Model weights at `<data dir>/models/` (fetched on first use, never bundled).
 Data dir: macOS `~/Library/Application Support/Patine`, Windows `%APPDATA%\Patine`,
 Linux `~/.local/share/patine`; `--dev` uses `<repo>/.patine-dev`.

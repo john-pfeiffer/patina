@@ -6,7 +6,6 @@ import { Sparkline } from '../components/Sparkline';
 import { useStore } from '../store';
 import { chordSymbol } from '../util/chords';
 import { db, hz, num, pct, secs } from '../util/format';
-import { RegionEdit } from './RegionEdit';
 
 interface RegionRowProps {
   region: Region;
@@ -16,7 +15,8 @@ interface RegionRowProps {
 }
 
 export function RegionRow({ region, isMember, hasSet, selectedSlot }: RegionRowProps) {
-  const [editing, setEditing] = useState(false);
+  const [showMetrics, setShowMetrics] = useState(false);
+  const openEditor = useStore((s) => s.openEditor);
   const addMember = useStore((s) => s.addMember);
   const assignRegionToSlot = useStore((s) => s.assignRegionToSlot);
   const previewInContext = useStore((s) => s.previewInContext);
@@ -45,6 +45,9 @@ export function RegionRow({ region, isMember, hasSet, selectedSlot }: RegionRowP
         </span>
         {region.source === 'user' && <span className="badge badge-muted">user</span>}
         {isMember && <span className="badge badge-ok">in set</span>}
+        <button type="button" className="disclosure" onClick={() => setShowMetrics((v) => !v)} title="tonal measurements (busyness, register, loudness, crest, floor, width, wetness, low end, tilt)">
+          {showMetrics ? '▾ metrics' : '▸ metrics'}
+        </button>
         <span className="spacer" />
         <button type="button" onClick={() => void engine.auditionRegion(api.regions.audioPath(region.id))} title="audition raw region solo">
           solo
@@ -68,10 +71,11 @@ export function RegionRow({ region, isMember, hasSet, selectedSlot }: RegionRowP
         >
           assign
         </button>
-        <button type="button" className={editing ? 'active' : ''} onClick={() => setEditing((v) => !v)}>
+        <button type="button" onClick={() => openEditor(region.id, selectedSlot?.id ?? null)} title="open the region editor: bounds, transient, chord, temporal settings">
           edit
         </button>
       </div>
+      {showMetrics && (
       <div className="region-metrics">
         <span title="busyness (melodic activity)">busy {num(region.busyness, 2)}</span>
         <span title="register centroid">reg {hz(region.register_centroid_hz)}</span>
@@ -95,7 +99,7 @@ export function RegionRow({ region, isMember, hasSet, selectedSlot }: RegionRowP
           )}
         </span>
       </div>
-      {editing && <RegionEdit region={region} />}
+      )}
     </div>
   );
 }

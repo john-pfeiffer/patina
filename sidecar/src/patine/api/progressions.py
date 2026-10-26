@@ -15,6 +15,7 @@ from ..models import (
     ProgressionPatch,
     RenderStatus,
     RerollRequest,
+    RerollResponse,
     Slot,
     SlotPatch,
 )
@@ -188,11 +189,23 @@ def _anchor_metrics(state, set_):
         return None
 
 
+def _samples_in_other_slots(prog: Progression, slot_id: str, pool: list) -> dict[str, list[int]]:
+    """sample_id → 1-based indices of the other slots playing a region of that sample."""
+    sample_of = {r.id: s.id for r, s in pool}
+    out: dict[str, list[int]] = {}
+    for other in prog.slots:
+        if other.id == slot_id or not other.region_id or other.region_id not in sample_of:
+            continue
+        out.setdefault(sample_of[other.region_id], []).append(other.idx + 1)
+    return out
+
+
 @router.get("/slots/{slot_id}/candidates", response_model=list[Candidate])
 def candidates(
     slot_id: str,
     strictness: str = Query("function", pattern="^(exact|function|two_tones)$"),
     limit: int = Query(50, ge=1, le=500),
+    unique_samples: bool = Query(False, description="hide regions whose sample plays in another slot"),
     state=Depends(ctx),
 ) -> list[Candidate]:
     slot = state.repo.get_slot(slot_id)
@@ -203,28 +216,40 @@ def candidates(
         return []
     key = _key(prog.key)
     pool = [(r, s) for r, s in state.repo.regions_with_samples() if region_chord(r) is not None]
-    return rank_candidates(target, key, pool, _anchor_metrics(state, set_), strictness, limit=limit)  # type: ignore[arg-type]
+    used = _samples_in_other_slots(prog, slot_id, pool)
+    out = rank_candidates(
+        target, key, pool, _anchor_metrics(state, set_), strictness, limit=limit,  # type: ignore[arg-type]
+        exclude_samples=set(used) if unique_samples else None,
+    )
+    for c in out:
+        c.used_by_slot_idx = used.get(c.sample_id, [])
+    return out
 
 
-@router.post("/progressions/{prog_id}/reroll", response_model=Progression)
-def reroll_progression(prog_id: str, body: RerollRequest, state=Depends(ctx)) -> Progression:
+@router.post("/progressions/{prog_id}/reroll", response_model=RerollResponse)
+def reroll_progression(prog_id: str, body: RerollRequest, state=Depends(ctx)) -> RerollResponse:
     prog = state.repo.get_progression(prog_id)
     set_ = state.repo.get_set(prog.set_id)
     key = _key(prog.key)
     pool = [(r, s) for r, s in state.repo.regions_with_samples() if region_chord(r) is not None]
     slots = []
+    labels: dict[str, str] = {}
     for s in prog.slots:
         c = _slot_chord(s)
         if c is not None:
             slots.append((s.id, c, s.region_id, s.locked))
-    changes = reroll(slots, key, pool, _anchor_metrics(state, set_), body.strictness, body.amount, seed=body.seed)
+            labels[s.id] = f"{s.idx + 1} ({s.chord_symbol})"
+    changes = reroll(
+        slots, key, pool, _anchor_metrics(state, set_), body.strictness, body.amount,
+        seed=body.seed, unique_samples=body.unique_samples, slot_labels=labels,
+    )
     for slot_id, pick in changes.items():
         if pick is None:
             continue
         region_id, transpose = pick
         state.repo.update_slot(slot_id, region_id=region_id, transpose_semitones=transpose)
         _ensure_member(state, prog.set_id, region_id)
-    return state.repo.get_progression(prog_id)
+    return RerollResponse(progression=state.repo.get_progression(prog_id), warnings=changes.warnings)
 
 
 @router.post("/progressions/import-csv", response_model=list[Progression])

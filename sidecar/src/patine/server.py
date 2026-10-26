@@ -60,13 +60,28 @@ def create_app(state: AppState | None = None) -> FastAPI:
         workers = int(os.environ.get("PATINE_WORKERS", "2"))
         state = AppState(DataPaths(data_dir), token, workers)
 
-    from .api import export, jobs, library, progressions, renders, sets, theory
+    from .api import (
+        export,
+        jobs,
+        library,
+        progressions,
+        renders,
+        roots,
+        services,
+        sets,
+        settings,
+        theory,
+    )
     from .api.services import register_job_handlers
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         register_job_handlers(state)
         state.worker.start()
+        current = services.apply_settings(state)
+        services.requeue_stale_analyses(state)
+        if current.scan_on_startup:
+            services.scan_all_roots(state)
         log.info("Patine sidecar %s serving data dir %s", __version__, state.paths.root)
         try:
             yield
@@ -133,6 +148,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
         return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     app.include_router(library.router)
+    app.include_router(roots.router)
+    app.include_router(settings.router)
     app.include_router(sets.router)
     app.include_router(progressions.router)
     app.include_router(theory.router)

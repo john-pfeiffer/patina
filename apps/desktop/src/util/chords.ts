@@ -11,6 +11,8 @@ const QUALITY_SUFFIX: Record<string, string> = {
   dim: 'dim',
   sus2: 'sus2',
   sus4: 'sus4',
+  /** Bare root or power chord: the analyser reports it where asserting a third would be a guess. */
+  '5': '5',
   aug: 'aug',
   dim7: 'dim7',
   m7b5: 'm7b5',

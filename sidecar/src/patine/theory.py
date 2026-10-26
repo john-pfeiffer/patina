@@ -17,10 +17,13 @@ PC_NAMES_SHARP = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B
 PC_NAMES_FLAT = ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
 _LETTER_PC = {"C": 0, "D": 2, "E": 4, "F": 5, "G": 7, "A": 9, "B": 11}
 
-Quality = Literal["maj", "min", "7", "m7", "maj7", "dim", "sus2", "sus4", "aug", "dim7", "m7b5", "6", "m6"]
+Quality = Literal["maj", "min", "7", "m7", "maj7", "dim", "sus2", "sus4", "5", "aug", "dim7", "m7b5", "6", "m6"]
 
-# Intervals above the root. The first eight are the qualities analysis reports
-# (handoff §4.5); the rest exist so typed progressions parse without surprises.
+# Intervals above the root. The first eight are the qualities the chord
+# estimator decides between (handoff §4.5); "5" is reported for a bare root or
+# root+fifth (a plucked note, a bass line, a power chord) where asserting a
+# third would be a guess; the rest exist so typed progressions parse without
+# surprises.
 QUALITY_INTERVALS: dict[str, tuple[int, ...]] = {
     "maj": (0, 4, 7),
     "min": (0, 3, 7),
@@ -30,6 +33,7 @@ QUALITY_INTERVALS: dict[str, tuple[int, ...]] = {
     "dim": (0, 3, 6),
     "sus2": (0, 2, 7),
     "sus4": (0, 5, 7),
+    "5": (0, 7),
     "aug": (0, 4, 8),
     "dim7": (0, 3, 6, 9),
     "m7b5": (0, 3, 6, 10),
@@ -38,10 +42,12 @@ QUALITY_INTERVALS: dict[str, tuple[int, ...]] = {
 }
 
 ANALYSIS_QUALITIES: tuple[str, ...] = ("maj", "min", "7", "m7", "maj7", "dim", "sus2", "sus4")
+# Everything a region can carry: the estimator's qualities plus the bare root.
+REPORTED_QUALITIES: tuple[str, ...] = (*ANALYSIS_QUALITIES, "5")
 
 QUALITY_SUFFIX: dict[str, str] = {
     "maj": "", "min": "m", "7": "7", "m7": "m7", "maj7": "maj7", "dim": "dim",
-    "sus2": "sus2", "sus4": "sus4", "aug": "aug", "dim7": "dim7", "m7b5": "m7b5",
+    "sus2": "sus2", "sus4": "sus4", "5": "5", "aug": "aug", "dim7": "dim7", "m7b5": "m7b5",
     "6": "6", "m6": "m6",
 }
 
@@ -60,7 +66,7 @@ _QUALITY_TOKENS: list[tuple[str, str]] = sorted(
         ("aug", "aug"), ("+", "aug"),
         ("dom7", "7"), ("7", "7"), ("9", "7"), ("11", "7"), ("13", "7"),
         ("maj", "maj"), ("Maj", "maj"), ("M", "maj"), ("major", "maj"), ("6", "6"),
-        ("add9", "maj"), ("add2", "maj"), ("5", "maj"),
+        ("add9", "maj"), ("add2", "maj"), ("5", "5"),
     ],
     key=lambda kv: -len(kv[0]),
 )
@@ -287,7 +293,7 @@ def chord_to_roman(chord: Chord, key: Key) -> str:
         numeral = numeral.lower()
     suffix = {
         "maj": "", "min": "", "7": "7", "m7": "7", "maj7": "maj7", "dim": "°", "dim7": "°7",
-        "m7b5": "ø7", "sus2": "sus2", "sus4": "sus4", "aug": "+", "6": "6", "m6": "6",
+        "m7b5": "ø7", "sus2": "sus2", "sus4": "sus4", "5": "5", "aug": "+", "6": "6", "m6": "6",
     }[chord.quality]
     return f"{acc}{numeral}{suffix}"
 
@@ -336,12 +342,20 @@ def is_relative(a: Chord, b: Chord) -> bool:
     return (major.root + 9) % 12 == minor.root and major.quality in ("maj", "maj7", "6") and minor.quality in ("min", "m7", "m6")
 
 
+def is_bare_root_match(candidate: Chord, target: Chord) -> bool:
+    """A bare root or power chord ("5") on the same root fits any chord on that
+    root: it asserts no third, so it is neither right nor wrong about one."""
+    return candidate.root == target.root and "5" in (candidate.quality, target.quality)
+
+
 def matches(candidate: Chord, target: Chord, key: Key | None, strictness: Strictness) -> bool:
     """Does `candidate` satisfy a slot asking for `target` at this strictness?"""
     if candidate.root == target.root and candidate.quality == target.quality:
         return True
     if strictness == "exact":
         return False
+    if is_bare_root_match(candidate, target):
+        return True
     if strictness == "function":
         if is_relative(candidate, target):
             return True
@@ -355,6 +369,8 @@ def matches(candidate: Chord, target: Chord, key: Key | None, strictness: Strict
 def substitution_label(candidate: Chord, target: Chord, key: Key | None) -> str:
     if candidate.root == target.root and candidate.quality == target.quality:
         return "exact"
+    if is_bare_root_match(candidate, target):
+        return "bare root"
     if is_relative(candidate, target):
         return "relative"
     if key is not None:

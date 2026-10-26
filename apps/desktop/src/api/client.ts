@@ -11,6 +11,8 @@ import type {
   IngestResponse,
   Job,
   JobStatus,
+  LibraryRoot,
+  LibraryRootCreate,
   MemberAdd,
   ParseRequest,
   ParseResponse,
@@ -24,9 +26,12 @@ import type {
   RegionPatch,
   RenderStatus,
   RerollRequest,
+  RerollResponse,
   Sample,
   SetCreate,
   SetPatch,
+  Settings,
+  SettingsPatch,
   SidecarInfo,
   Slot,
   SlotPatch,
@@ -127,9 +132,24 @@ export const api = {
     get: (id: string) => request<Sample>('GET', `/samples/${id}`),
     remove: (id: string) => request<void>('DELETE', `/samples/${id}`),
     reanalyze: (id: string) => request<Job>('POST', `/samples/${id}/reanalyze`),
-    peaks: (id: string, bins = 800) => request<Peaks>('GET', `/samples/${id}/peaks${q({ bins })}`),
-    audioPath: (id: string) => `/samples/${id}/audio`,
+    reanalyzeAll: () => request<Job[]>('POST', '/samples/reanalyze'),
+    peaks: (id: string, bins = 800, start?: number, end?: number) => request<Peaks>('GET', `/samples/${id}/peaks${q({ bins, start, end })}`),
+    audioPath: (id: string, start?: number, end?: number) => `/samples/${id}/audio${q({ start, end })}`,
     createRegion: (id: string, body: RegionCreate) => request<Region>('POST', `/samples/${id}/regions`, body),
+  },
+
+  roots: {
+    list: () => request<LibraryRoot[]>('GET', '/roots'),
+    add: (body: LibraryRootCreate) => request<{ root: LibraryRoot; job: Job }>('POST', '/roots', body),
+    scan: (id: string) => request<Job>('POST', `/roots/${id}/scan`),
+    scanAll: () => request<Job[]>('POST', '/roots/scan'),
+    remove: (id: string, deleteSamples: boolean) =>
+      request<void>('DELETE', `/roots/${id}${q({ delete_samples: deleteSamples ? 'true' : undefined })}`),
+  },
+
+  settings: {
+    get: () => request<Settings>('GET', '/settings'),
+    patch: (body: SettingsPatch) => request<Settings>('PATCH', '/settings', body),
   },
 
   regions: {
@@ -160,14 +180,14 @@ export const api = {
     patch: (id: string, body: ProgressionPatch) => request<Progression>('PATCH', `/progressions/${id}`, body),
     remove: (id: string) => request<void>('DELETE', `/progressions/${id}`),
     renders: (id: string) => request<Record<string, RenderStatus>>('GET', `/progressions/${id}/renders`),
-    reroll: (id: string, body: RerollRequest) => request<Progression>('POST', `/progressions/${id}/reroll`, body),
+    reroll: (id: string, body: RerollRequest) => request<RerollResponse>('POST', `/progressions/${id}/reroll`, body),
     importCsv: (body: CsvImportRequest) => request<Progression[]>('POST', '/progressions/import-csv', body),
   },
 
   slots: {
     patch: (id: string, body: SlotPatch) => request<Slot>('PATCH', `/slots/${id}`, body),
-    candidates: (id: string, strictness: Strictness, limit = 50) =>
-      request<Candidate[]>('GET', `/slots/${id}/candidates${q({ strictness, limit })}`),
+    candidates: (id: string, strictness: Strictness, uniqueSamples = false, limit = 50) =>
+      request<Candidate[]>('GET', `/slots/${id}/candidates${q({ strictness, limit, unique_samples: uniqueSamples ? 'true' : undefined })}`),
   },
 
   theory: {

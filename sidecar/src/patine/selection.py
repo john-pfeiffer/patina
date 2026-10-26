@@ -80,9 +80,14 @@ def rank_candidates(
     *,
     limit: int = 50,
     allow_transposition: bool = True,
+    exclude_samples: set[str] | None = None,
 ) -> list[Candidate]:
+    """`exclude_samples`: source samples that may not be offered (the
+    distinct-samples rule: they already play in another slot)."""
     out: list[Candidate] = []
     for region, sample in pool:
+        if exclude_samples and sample.id in exclude_samples:
+            continue
         chord = region_chord(region)
         if chord is None:
             continue
@@ -94,7 +99,7 @@ def rank_candidates(
             exact = chord.root == target.root and chord.quality == target.quality
             t_cost = 0.0 if exact else SUBSTITUTION_COST
             best = Candidate(
-                region=region, sample_name=sample.name,
+                region=region, sample_name=sample.name, sample_id=sample.id,
                 score=t_cost + timbre + confidence_cost,
                 transposition_cost=t_cost, timbral_distance=timbre, confidence_cost=confidence_cost,
                 transpose_semitones=0, label=substitution_label(chord, target, key),
@@ -104,7 +109,7 @@ def rank_candidates(
             if abs(n) <= MAX_TRANSPOSE:
                 t_cost = transposition_cost(n)
                 cand = Candidate(
-                    region=region, sample_name=sample.name,
+                    region=region, sample_name=sample.name, sample_id=sample.id,
                     score=t_cost + timbre + confidence_cost,
                     transposition_cost=t_cost, timbral_distance=timbre, confidence_cost=confidence_cost,
                     transpose_semitones=n, label=f"{n:+d} st",
@@ -117,6 +122,15 @@ def rank_candidates(
     return out[:limit]
 
 
+class RerollChanges(dict[str, tuple[str, int] | None]):
+    """slot_id → (region_id, transpose) for the slots that change, plus the
+    warnings a relaxed distinct-samples rule produced."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.warnings: list[str] = []
+
+
 def reroll(
     slots: list[tuple[str, Chord, str | None, bool]],
     key: Key | None,
@@ -127,23 +141,49 @@ def reroll(
     *,
     seed: int | None = None,
     top_k: int = 8,
-) -> dict[str, tuple[str, int] | None]:
-    """§5.5. `slots` = (slot_id, target chord, current region_id, locked).
-    Returns slot_id → (region_id, transpose) for the slots that change.
-    Picks are weighted toward lower scores so a Reroll stays musical."""
+    unique_samples: bool = False,
+    slot_labels: dict[str, str] | None = None,
+) -> RerollChanges:
+    """§5.5. `slots` = (slot_id, target chord, current region_id, locked), in
+    progression order. Picks are weighted toward lower scores so a Reroll
+    stays musical. With `unique_samples` no two slots end up on regions of
+    the same source sample: slots that keep their region claim their sample
+    first, then the changing slots are filled in order, each excluding the
+    samples claimed so far; a slot with nothing left falls back to the full
+    pool and a warning names it."""
     rng = random.Random(seed)
-    changes: dict[str, tuple[str, int] | None] = {}
+    changes = RerollChanges()
     unlocked = [s for s in slots if not s[3]]
     n_change = round(len(unlocked) * max(0.0, min(100.0, amount)) / 100.0)
     if n_change == 0:
         return changes
     chosen = rng.sample(unlocked, n_change) if n_change < len(unlocked) else unlocked
+    order = {s[0]: i for i, s in enumerate(slots)}
+    chosen.sort(key=lambda s: order[s[0]])
+    sample_of = {r.id: smp.id for r, smp in pool}
+    chosen_ids = {s[0] for s in chosen}
+    used: set[str] = set()
+    if unique_samples:
+        for slot_id, _, current, _ in slots:
+            if slot_id not in chosen_ids and current and current in sample_of:
+                used.add(sample_of[current])
+    labels = slot_labels or {}
     for slot_id, target, current, _ in chosen:
-        cands = rank_candidates(target, key, pool, anchor_metrics, strictness, limit=top_k + 1)
+        exclude = used if unique_samples else None
+        cands = rank_candidates(target, key, pool, anchor_metrics, strictness, limit=top_k + 1, exclude_samples=exclude)
         cands = [c for c in cands if c.region.id != current] or cands
+        if not cands and unique_samples:
+            cands = rank_candidates(target, key, pool, anchor_metrics, strictness, limit=top_k + 1)
+            cands = [c for c in cands if c.region.id != current] or cands
+            if cands:
+                changes.warnings.append(
+                    f"slot {labels.get(slot_id, slot_id)}: every candidate's sample already plays in another slot; reused one"
+                )
         if not cands:
             continue
         weights = [1.0 / (1.0 + c.score) for c in cands]
         pick = rng.choices(cands, weights=weights, k=1)[0]
         changes[slot_id] = (pick.region.id, pick.transpose_semitones)
+        if unique_samples:
+            used.add(pick.sample_id or sample_of.get(pick.region.id, ""))
     return changes

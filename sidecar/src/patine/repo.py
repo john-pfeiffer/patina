@@ -10,6 +10,7 @@ from typing import Any
 from .db import Database, dumps, loads, new_id, now_iso
 from .models import (
     ConformDeltas,
+    LibraryRoot,
     Pattern,
     Progression,
     Region,
@@ -17,6 +18,7 @@ from .models import (
     Sample,
     Set,
     SetMember,
+    Settings,
     Slot,
     TemporalSettings,
     TonalMetrics,
@@ -57,12 +59,27 @@ def row_to_region(r: sqlite3.Row) -> Region:
     )
 
 
+def _col(r: sqlite3.Row, name: str, default: Any = None) -> Any:
+    return r[name] if name in r.keys() else default
+
+
+def row_to_root(r: sqlite3.Row) -> LibraryRoot:
+    return LibraryRoot(
+        id=r["id"], path=r["path"], name=r["name"], added_at=r["added_at"], last_scan_at=r["last_scan_at"],
+        status=r["status"], file_count=r["file_count"], error=r["error"],
+    )
+
+
 def row_to_sample(r: sqlite3.Row, regions: list[Region] | None = None) -> Sample:
     return Sample(
         id=r["id"],
         path=r["path"],
         hash=r["hash"],
         name=r["name"],
+        root_id=_col(r, "root_id"),
+        rel_path=_col(r, "rel_path"),
+        mtime=_col(r, "mtime"),
+        size=_col(r, "size"),
         duration=r["duration"],
         sample_rate=r["sample_rate"],
         channels=r["channels"],
@@ -72,6 +89,7 @@ def row_to_sample(r: sqlite3.Row, regions: list[Region] | None = None) -> Sample
         bpm_confidence=r["bpm_confidence"],
         beats=loads(r["beats"], []),
         downbeats=loads(r["downbeats"], []),
+        onsets=loads(_col(r, "onsets"), []),
         key_estimate=r["key_estimate"],
         key_confidence=r["key_confidence"],
         metrics=_metrics(r["metrics"]),
@@ -134,14 +152,78 @@ class Repo:
 
     # --- samples ------------------------------------------------------------------
 
-    def insert_sample(self, path: str, file_hash: str, duration: float, sample_rate: int, channels: int) -> Sample:
+    def insert_sample(
+        self, path: str, file_hash: str, duration: float, sample_rate: int, channels: int, *,
+        root_id: str | None = None, rel_path: str | None = None, mtime: float | None = None, size: int | None = None,
+    ) -> Sample:
         sid = new_id()
         with self.db.tx() as conn:
             conn.execute(
-                "INSERT INTO samples (id, path, hash, name, duration, sample_rate, channels, added_at) VALUES (?,?,?,?,?,?,?,?)",
-                (sid, path, file_hash, Path(path).name, duration, sample_rate, channels, now_iso()),
+                "INSERT INTO samples (id, path, hash, name, duration, sample_rate, channels, added_at, root_id, rel_path, mtime, size)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (sid, path, file_hash, Path(path).name, duration, sample_rate, channels, now_iso(), root_id, rel_path, mtime, size),
             )
         return self.get_sample(sid)
+
+    def samples_for_root(self, root_id: str) -> list[Sample]:
+        rows = self.db.all("SELECT * FROM samples WHERE root_id = ? ORDER BY rel_path", (root_id,))
+        return [row_to_sample(r, []) for r in rows]
+
+    # --- library roots -------------------------------------------------------------
+
+    def insert_root(self, path: str, name: str) -> LibraryRoot:
+        rid = new_id()
+        with self.db.tx() as conn:
+            conn.execute("INSERT INTO library_roots (id, path, name, added_at) VALUES (?,?,?,?)", (rid, path, name, now_iso()))
+        return self.get_root(rid)
+
+    def get_root(self, root_id: str) -> LibraryRoot:
+        r = self.db.one("SELECT * FROM library_roots WHERE id = ?", (root_id,))
+        if r is None:
+            raise NotFound(root_id)
+        return row_to_root(r)
+
+    def root_by_path(self, path: str) -> LibraryRoot | None:
+        r = self.db.one("SELECT * FROM library_roots WHERE path = ?", (path,))
+        return row_to_root(r) if r else None
+
+    def list_roots(self) -> list[LibraryRoot]:
+        return [row_to_root(r) for r in self.db.all("SELECT * FROM library_roots ORDER BY added_at, name")]
+
+    def update_root(self, root_id: str, **fields: Any) -> LibraryRoot:
+        f = _json_fields(fields)
+        if f:
+            cols = ", ".join(f"{k} = ?" for k in f)
+            with self.db.tx() as conn:
+                conn.execute(f"UPDATE library_roots SET {cols} WHERE id = ?", (*f.values(), root_id))
+        return self.get_root(root_id)
+
+    def delete_root(self, root_id: str, *, delete_samples: bool) -> list[str]:
+        """Remove a root; its samples are deleted or kept as loose files.
+        Returns the ids of the samples that were deleted."""
+        ids = [s.id for s in self.samples_for_root(root_id)] if delete_samples else []
+        with self.db.tx() as conn:
+            if delete_samples:
+                conn.execute("DELETE FROM samples WHERE root_id = ?", (root_id,))
+            conn.execute("DELETE FROM library_roots WHERE id = ?", (root_id,))
+        return ids
+
+    # --- settings --------------------------------------------------------------------
+
+    def get_settings(self) -> Settings:
+        rows = self.db.all("SELECT key, value FROM settings")
+        stored = {r["key"]: loads(r["value"]) for r in rows}
+        known = {k: v for k, v in stored.items() if k in Settings.model_fields}
+        return Settings.model_validate(known)
+
+    def set_settings(self, patch: dict[str, Any]) -> Settings:
+        with self.db.tx() as conn:
+            for k, v in patch.items():
+                if v is None or k not in Settings.model_fields:
+                    continue
+                conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                             (k, dumps(v)))
+        return self.get_settings()
 
     def sample_by_path(self, path: str) -> Sample | None:
         r = self.db.one("SELECT * FROM samples WHERE path = ?", (path,))
@@ -172,6 +254,16 @@ class Repo:
         with self.db.tx() as conn:
             conn.execute("DELETE FROM samples WHERE id = ?", (sample_id,))
 
+    def stale_sample_ids(self, current_version: int) -> list[str]:
+        """Samples analysed by an older pipeline (or never versioned) that are
+        not already queued or running."""
+        rows = self.db.all(
+            "SELECT id FROM samples WHERE analysis_status IN ('done', 'failed') "
+            "AND (analysis_version IS NULL OR analysis_version < ?) ORDER BY added_at",
+            (current_version,),
+        )
+        return [r["id"] for r in rows]
+
     # --- regions -------------------------------------------------------------------
 
     def regions_for_sample(self, sample_id: str) -> list[Region]:
@@ -195,13 +287,52 @@ class Repo:
             conn.execute(f"INSERT INTO regions ({', '.join(cols)}) VALUES ({marks})", (rid, sample_id, source, *f.values()))
         return self.get_region(rid)
 
-    def replace_analysis_regions(self, sample_id: str, regions: list[dict[str, Any]]) -> list[Region]:
-        """Drop the previous analysis regions (user regions survive) and insert
-        the new ones. Member/slot references to dropped regions cascade to NULL."""
+    def replace_analysis_regions(
+        self, sample_id: str, regions: list[dict[str, Any]], *, match_iou: float = 0.5, user_iou: float = 0.8
+    ) -> list[Region]:
+        """Replace a sample's analysis regions with a new analysis, keeping ids
+        where the new and old regions overlap (temporal IoU >= `match_iou`,
+        greedy by overlap) so set membership, the anchor and slot assignments
+        survive a reanalysis; a matched region keeps its user overrides and
+        declared length. Old regions nothing matches are deleted; new regions
+        that cover a span a user region already owns (IoU >= `user_iou`) are
+        not inserted. Returns the sample's analysis regions in order."""
+        old = [r for r in self.regions_for_sample(sample_id) if r.source == "analysis"]
+        users = [r for r in self.regions_for_sample(sample_id) if r.source == "user"]
+
+        def iou(a0: float, a1: float, b0: float, b1: float) -> float:
+            inter = max(0.0, min(a1, b1) - max(a0, b0))
+            union = max(a1, b1) - min(a0, b0)
+            return inter / union if union > 0 else 0.0
+
+        pairs = sorted(
+            ((iou(f["start_s"], f["end_s"], o.start_s, o.end_s), i, j) for i, f in enumerate(regions) for j, o in enumerate(old)),
+            reverse=True,
+        )
+        matched_new: dict[int, int] = {}
+        matched_old: set[int] = set()
+        for score, i, j in pairs:
+            if score < match_iou:
+                break
+            if i in matched_new or j in matched_old:
+                continue
+            matched_new[i] = j
+            matched_old.add(j)
+        keep_cols = ("user_overrides", "declared_length_beats")
+        out: list[Region] = []
         with self.db.tx() as conn:
-            conn.execute("DELETE FROM regions WHERE sample_id = ? AND source = 'analysis'", (sample_id,))
-        out = []
+            for j, o in enumerate(old):
+                if j not in matched_old:
+                    conn.execute("DELETE FROM regions WHERE id = ?", (o.id,))
         for i, fields in enumerate(regions):
+            fields = {k: v for k, v in fields.items() if k not in ("id", "source")}
+            if i in matched_new:
+                o = old[matched_new[i]]
+                f = {k: v for k, v in fields.items() if k not in keep_cols}
+                out.append(self.update_region(o.id, **f, position=i))
+                continue
+            if any(iou(fields["start_s"], fields["end_s"], u.start_s, u.end_s) >= user_iou for u in users):
+                continue
             out.append(self.insert_region(sample_id, {**fields, "position": i}, source="analysis"))
         return out
 

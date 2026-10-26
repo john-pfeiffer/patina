@@ -21,6 +21,7 @@ const region = (id: string): Region => ({
   metrics: null,
   user_overrides: {
     keep_preroll: false,
+    snap_s: null,
     nudge_ms: 0,
     warp_markers: [],
     warp_strength: null,
@@ -36,6 +37,8 @@ const region = (id: string): Region => ({
 const cand = (id: string, score: number, transpose: number): Candidate => ({
   region: region(id),
   sample_name: id,
+  sample_id: 's',
+  used_by_slot_idx: [],
   score,
   transposition_cost: transpose === 0 ? 0 : 1,
   timbral_distance: 0,
@@ -63,5 +66,7 @@ describe('orderCandidates', () => {
 describe('candidateKey', () => {
   it('is distinct per strictness', () => {
     expect(candidateKey('slot', 'exact')).not.toBe(candidateKey('slot', 'function'));
+    expect(candidateKey('slot', 'exact', true)).not.toBe(candidateKey('slot', 'exact'));
+    expect(candidateKey('slot', 'exact', false)).toBe(candidateKey('slot', 'exact'));
   });
 });

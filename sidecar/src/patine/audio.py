@@ -75,3 +75,22 @@ def write_wav(path: str | Path, y: np.ndarray, sr: int, subtype: str = "FLOAT") 
 
 def is_audio_file(path: str | Path) -> bool:
     return Path(path).suffix.lower() in AUDIO_EXTENSIONS
+
+
+def is_hidden(path: str | Path) -> bool:
+    """Dot files and macOS AppleDouble `._x.wav` sidecars are never audio to scan."""
+    name = Path(path).name
+    return name.startswith(".") or name.startswith("._")
+
+
+def iter_audio_files(folder: str | Path):
+    """Audio files under `folder`, recursively, skipping hidden files and
+    directories; sorted so scans are reproducible."""
+    root = Path(folder)
+    found: list[Path] = []
+    for p in root.rglob("*"):
+        if any(is_hidden(part) for part in p.relative_to(root).parts):
+            continue
+        if p.is_file() and is_audio_file(p):
+            found.append(p)
+    return sorted(found)
