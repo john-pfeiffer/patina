@@ -69,10 +69,7 @@ export function CandidateDrawer({ slot }: { slot: Slot }) {
               <th>chord</th>
               <th title="region length: beats (declared or tracked) · seconds; red when shorter than the slot">len</th>
               <th>label</th>
-              <th title="transposition + timbral distance + (1 − confidence)">score</th>
-              <th>transp</th>
-              <th>timbre</th>
-              <th>conf</th>
+              <th title="transposition + timbral distance + (1 − confidence); hover a score for the parts">score</th>
               <th title="audition: solo plays the raw region; in ctx renders it conformed at this slot and plays the progression">hear</th>
               <th />
             </tr>
@@ -101,10 +98,7 @@ export function CandidateDrawer({ slot }: { slot: Slot }) {
                     {c.label}
                     {c.transpose_semitones !== 0 && ` (${transposeLabel(c.transpose_semitones)})`}
                   </td>
-                  <td>{num(c.score, 3)}</td>
-                  <td>{num(c.transposition_cost, 2)}</td>
-                  <td>{num(c.timbral_distance, 2)}</td>
-                  <td>{num(c.confidence_cost, 2)}</td>
+                  <td title={`transposition ${num(c.transposition_cost, 2)} + timbre ${num(c.timbral_distance, 2)} + (1 − confidence) ${num(c.confidence_cost, 2)}`}>{num(c.score, 2)}</td>
                   <td className="hear">
                     <button type="button" onClick={() => solo(r.id)} title="audition raw region solo">
                       solo

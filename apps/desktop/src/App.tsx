@@ -2,13 +2,12 @@ import { useEffect, useRef } from 'react';
 import { Splitter } from './components/Splitter';
 import { LibraryPane } from './panes/LibraryPane';
 import { PreferencesDialog } from './panes/PreferencesDialog';
-import { RegionEditor } from './panes/RegionEditor';
 import { ProgressionPane } from './panes/ProgressionPane';
+import { RegionEditor } from './panes/RegionEditor';
 import { SetPane } from './panes/SetPane';
 import { TransportPane } from './panes/TransportPane';
 import { useStore } from './store';
-
-const MIN_FRACTION = 0.3;
+import { clampSidebar } from './util/layout';
 
 function ErrorBar() {
   const error = useStore((s) => s.lastError);
@@ -25,12 +24,16 @@ function ErrorBar() {
   );
 }
 
+/** Workspace: Library sidebar (left) · Progression (centre) · Set inspector
+ * (right) · Transport (bottom). Sidebars collapse to a rail and resize by
+ * dragging; the centre takes what is left. */
 export function App() {
-  const fractions = useStore((s) => s.ui.paneFractions);
+  const layout = useStore((s) => s.ui.layout);
+  const uiScale = useStore((s) => s.ui.uiScale);
   const dialog = useStore((s) => s.ui.dialog);
   const setUi = useStore((s) => s.setUi);
-  const panesRef = useRef<HTMLDivElement>(null);
-  const dragStart = useRef<[number, number, number]>(fractions);
+  const workspace = useRef<HTMLDivElement>(null);
+  const dragStart = useRef(layout);
 
   // Cmd/Ctrl+, opens Preferences, as on every desktop app.
   useEffect(() => {
@@ -44,36 +47,52 @@ export function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [setUi]);
 
-  /** Moves width between pane `i` and `i + 1`, keeping the total constant. */
-  const drag = (i: 0 | 1) => (deltaPx: number) => {
-    const width = panesRef.current?.clientWidth ?? 1;
-    const total = dragStart.current.reduce((a, b) => a + b, 0);
-    const delta = (deltaPx / width) * total;
-    const next: [number, number, number] = [...dragStart.current];
-    const a = next[i] + delta;
-    const b = next[i + 1]! - delta;
-    if (a < MIN_FRACTION || b < MIN_FRACTION) return;
-    next[i] = a;
-    next[i + 1] = b;
-    setUi({ paneFractions: next });
-  };
+  // UI scale: page zoom, which scales every px value (WebKit and Chromium).
+  useEffect(() => {
+    const root = document.getElementById('root');
+    if (root) (root.style as CSSStyleDeclaration & { zoom?: string }).zoom = `${uiScale / 100}`;
+  }, [uiScale]);
+
   const beginDrag = () => {
-    dragStart.current = useStore.getState().ui.paneFractions;
+    dragStart.current = useStore.getState().ui.layout;
   };
+  const total = () => workspace.current?.clientWidth ?? 1200;
+  const dragLibrary = (deltaPx: number) =>
+    setUi({ layout: { ...layout, libraryWidth: clampSidebar(dragStart.current.libraryWidth + deltaPx, total(), dragStart.current.setOpen ? dragStart.current.setWidth : 0) } });
+  const dragSet = (deltaPx: number) =>
+    setUi({ layout: { ...layout, setWidth: clampSidebar(dragStart.current.setWidth - deltaPx, total(), dragStart.current.libraryOpen ? dragStart.current.libraryWidth : 0) } });
 
   return (
     <div className="app">
       <ErrorBar />
-      <div
-        className="panes"
-        ref={panesRef}
-        style={{ gridTemplateColumns: `${fractions[0]}fr 6px ${fractions[1]}fr 6px ${fractions[2]}fr` }}
-      >
-        <LibraryPane />
-        <Splitter onStart={beginDrag} onDrag={drag(0)} />
-        <SetPane />
-        <Splitter onStart={beginDrag} onDrag={drag(1)} />
-        <ProgressionPane />
+      <div className="workspace" ref={workspace}>
+        {layout.libraryOpen ? (
+          <>
+            <div className="sidebar" style={{ width: layout.libraryWidth }}>
+              <LibraryPane />
+            </div>
+            <Splitter onStart={beginDrag} onDrag={dragLibrary} />
+          </>
+        ) : (
+          <button type="button" className="rail" onClick={() => setUi({ layout: { ...layout, libraryOpen: true } })} title="show the library">
+            <span>Library</span>
+          </button>
+        )}
+        <div className="centre">
+          <ProgressionPane />
+        </div>
+        {layout.setOpen ? (
+          <>
+            <Splitter onStart={beginDrag} onDrag={dragSet} />
+            <div className="sidebar" style={{ width: layout.setWidth }}>
+              <SetPane />
+            </div>
+          </>
+        ) : (
+          <button type="button" className="rail" onClick={() => setUi({ layout: { ...layout, setOpen: true } })} title="show the set">
+            <span>Set</span>
+          </button>
+        )}
       </div>
       <TransportPane />
       {dialog === 'preferences' && <PreferencesDialog />}

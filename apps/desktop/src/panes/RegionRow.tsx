@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { api } from '../api/client';
 import { TILT_BAND_CENTRES_HZ, type Region, type Slot } from '../api/types';
 import { engine } from '../audio/engine';
@@ -14,6 +15,7 @@ interface RegionRowProps {
 }
 
 export function RegionRow({ region, isMember, hasSet, selectedSlot }: RegionRowProps) {
+  const [showMetrics, setShowMetrics] = useState(false);
   const openEditor = useStore((s) => s.openEditor);
   const addMember = useStore((s) => s.addMember);
   const assignRegionToSlot = useStore((s) => s.assignRegionToSlot);
@@ -43,6 +45,9 @@ export function RegionRow({ region, isMember, hasSet, selectedSlot }: RegionRowP
         </span>
         {region.source === 'user' && <span className="badge badge-muted">user</span>}
         {isMember && <span className="badge badge-ok">in set</span>}
+        <button type="button" className="disclosure" onClick={() => setShowMetrics((v) => !v)} title="tonal measurements (busyness, register, loudness, crest, floor, width, wetness, low end, tilt)">
+          {showMetrics ? '▾ metrics' : '▸ metrics'}
+        </button>
         <span className="spacer" />
         <button type="button" onClick={() => void engine.auditionRegion(api.regions.audioPath(region.id))} title="audition raw region solo">
           solo
@@ -70,6 +75,7 @@ export function RegionRow({ region, isMember, hasSet, selectedSlot }: RegionRowP
           edit
         </button>
       </div>
+      {showMetrics && (
       <div className="region-metrics">
         <span title="busyness (melodic activity)">busy {num(region.busyness, 2)}</span>
         <span title="register centroid">reg {hz(region.register_centroid_hz)}</span>
@@ -93,6 +99,7 @@ export function RegionRow({ region, isMember, hasSet, selectedSlot }: RegionRowP
           )}
         </span>
       </div>
+      )}
     </div>
   );
 }

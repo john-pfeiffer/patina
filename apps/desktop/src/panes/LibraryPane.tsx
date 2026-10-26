@@ -185,6 +185,7 @@ export function LibraryPane() {
   const roots = useStore((s) => s.roots);
   const filter = useStore((s) => s.ui.libraryFilter);
   const collapsedFolders = useStore((s) => s.ui.collapsedFolders);
+  const layout = useStore((s) => s.ui.layout);
   const setUi = useStore((s) => s.setUi);
   const regionCount = regionsById(samples).size;
   const groups = groupLibrary(samples, roots, filter);
@@ -193,6 +194,9 @@ export function LibraryPane() {
   return (
     <section className="pane pane-library">
       <header className="pane-head">
+        <button type="button" className="disclosure" onClick={() => setUi({ layout: { ...layout, libraryOpen: false } })} title="hide the library">
+          ◂
+        </button>
         <h2>Library</h2>
         <span className="readout">
           {samples.length} samples · {regionCount} regions

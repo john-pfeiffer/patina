@@ -34,6 +34,7 @@ import type {
 import { candidateKey, orderCandidates } from './util/candidates';
 import { transposeBetween } from './util/chords';
 import { errorMessage } from './util/format';
+import { clampScale, DEFAULT_LAYOUT, type Layout } from './util/layout';
 
 export type ConnectionStatus = 'starting' | 'connecting' | 'ready' | 'error';
 
@@ -76,7 +77,10 @@ export interface UiState {
   selectedSlotId: string | null;
   strictness: Strictness;
   rerollAmount: number;
-  paneFractions: [number, number, number];
+  /** Workspace: sidebar widths and collapse state. */
+  layout: Layout;
+  /** Page zoom in percent (Preferences › Appearance). */
+  uiScale: number;
   collapsedSamples: Record<string, true>;
   outDir: string;
   exportLoops: number;
@@ -250,7 +254,8 @@ const PREFS_KEY = 'patine.ui';
 interface Prefs {
   currentSetId: string | null;
   currentProgressionId: string | null;
-  paneFractions: [number, number, number];
+  layout: Layout;
+  uiScale: number;
   outDir: string;
   audioSinkId: string | null;
   uniqueSamples: boolean;
@@ -345,7 +350,8 @@ export const useStore = create<PatineState>()((set, get) => {
     savePrefs({
       currentSetId: s.currentSetId,
       currentProgressionId: s.currentProgressionId,
-      paneFractions: s.ui.paneFractions,
+      layout: s.ui.layout,
+      uiScale: s.ui.uiScale,
       outDir: s.ui.outDir,
       audioSinkId: s.ui.audioSinkId,
       uniqueSamples: s.ui.uniqueSamples,
@@ -377,7 +383,8 @@ export const useStore = create<PatineState>()((set, get) => {
       selectedSlotId: null,
       strictness: 'function',
       rerollAmount: 100,
-      paneFractions: prefs.paneFractions ?? [1.2, 1, 1.4],
+      layout: { ...DEFAULT_LAYOUT, ...(prefs.layout ?? {}) },
+      uiScale: clampScale(prefs.uiScale ?? 100),
       collapsedSamples: {},
       outDir: prefs.outDir ?? '',
       exportLoops: 1,
@@ -395,7 +402,7 @@ export const useStore = create<PatineState>()((set, get) => {
     setTransport: (patch) => set((s) => ({ transport: { ...s.transport, ...patch } })),
     setUi: (patch) => {
       set((s) => ({ ui: { ...s.ui, ...patch } }));
-      if (patch.paneFractions || patch.outDir !== undefined || patch.audioSinkId !== undefined || patch.uniqueSamples !== undefined) persist();
+      if (patch.layout || patch.uiScale !== undefined || patch.outDir !== undefined || patch.audioSinkId !== undefined || patch.uniqueSamples !== undefined) persist();
     },
     clearError: () => set({ lastError: null }),
 

@@ -5,6 +5,7 @@ import { Dialog } from '../components/Dialog';
 import { NumberField } from '../components/NumberField';
 import { selectQueueCounts, useStore, type PrefsTab } from '../store';
 import { errorMessage } from '../util/format';
+import { clampScale, DEFAULT_LAYOUT, UI_SCALE_MAX, UI_SCALE_MIN } from '../util/layout';
 
 const TABS: { id: PrefsTab; label: string }[] = [
   { id: 'audio', label: 'Audio' },
@@ -384,8 +385,42 @@ export function AnalysisPrefs() {
   );
 }
 
-function Placeholder({ what }: { what: string }) {
-  return <p className="muted">{what} settings arrive in a later update.</p>;
+/** UI scale and the workspace layout. */
+export function AppearancePrefs() {
+  const uiScale = useStore((s) => s.ui.uiScale);
+  const layout = useStore((s) => s.ui.layout);
+  const setUi = useStore((s) => s.setUi);
+  return (
+    <div className="prefs-section">
+      <h3>Size</h3>
+      <div className="row">
+        <label className="knob">
+          <span className="knob-label">UI scale</span>
+          <input type="range" min={UI_SCALE_MIN} max={UI_SCALE_MAX} step={5} value={uiScale} onChange={(e) => setUi({ uiScale: clampScale(Number(e.target.value)) })} />
+          <span className="readout">{uiScale} %</span>
+        </label>
+        <button type="button" disabled={uiScale === 100} onClick={() => setUi({ uiScale: 100 })}>
+          reset
+        </button>
+      </div>
+      <p className="muted">Scales the whole window; text, knobs and readouts keep their proportions.</p>
+      <h3>Workspace</h3>
+      <div className="row">
+        <label className="check">
+          <input type="checkbox" checked={layout.libraryOpen} onChange={(e) => setUi({ layout: { ...layout, libraryOpen: e.target.checked } })} />
+          library sidebar
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={layout.setOpen} onChange={(e) => setUi({ layout: { ...layout, setOpen: e.target.checked } })} />
+          set inspector
+        </label>
+        <button type="button" onClick={() => setUi({ layout: DEFAULT_LAYOUT })}>
+          reset widths
+        </button>
+      </div>
+      <p className="muted">Drag the dividers to resize; the arrows in the pane headers collapse a sidebar to a rail.</p>
+    </div>
+  );
 }
 
 export function PreferencesDialog() {
@@ -406,7 +441,7 @@ export function PreferencesDialog() {
           {tab === 'audio' && <AudioPrefs />}
           {tab === 'library' && <LibraryPrefs />}
           {tab === 'analysis' && <AnalysisPrefs />}
-          {tab === 'appearance' && <Placeholder what="Appearance" />}
+          {tab === 'appearance' && <AppearancePrefs />}
         </div>
       </div>
     </Dialog>

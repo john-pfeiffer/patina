@@ -203,3 +203,13 @@ after `tauri build` and calls `/health` on all three platforms.
   through the overrides. "Save as new" keeps the original and adds the draft as
   a user region (assigned to the slot when opened from one). Any edited region
   is marked `source: user` and a rescan never re-cuts it.
+- **Workspace layout instead of three equal columns.** The handoff's four
+  panes stay, arranged as a Library sidebar (collapsible to a rail,
+  resizable), the Progression as the centre with the candidate panel docked
+  beside the slots while a slot is selected, a Set inspector sidebar on the
+  right, and a two-row Transport (transport, then export) whose engine, event
+  and queue readouts fold into chips with tooltips and whose job list sits
+  behind a `jobs` button. Type is 13 px with 6–10 px padding; a region's
+  tonal measurements and a slot's pattern editor sit behind disclosures so a
+  row reads as one line; Preferences › Appearance has a UI scale (page zoom,
+  85–140 %) and the sidebar toggles. Layout and scale persist in `patine.ui`.

@@ -180,7 +180,8 @@ export function ProgressionPane() {
         <h2>Progression</h2>
         <ProgressionPicker />
       </header>
-      <div className="pane-body">
+      <div className={`pane-body prog-body ${selectedSlot ? 'prog-split' : ''}`}>
+        <div className="prog-main">
         {!set && <p className="muted">Select or create a set first.</p>}
         {set && (
           <div className="block">
@@ -246,8 +247,13 @@ export function ProgressionPane() {
             })}
           </div>
         )}
-        {selectedSlot && <CandidateDrawer slot={selectedSlot} />}
         <CsvImport />
+        </div>
+        {selectedSlot && (
+          <aside className="prog-side">
+            <CandidateDrawer slot={selectedSlot} />
+          </aside>
+        )}
       </div>
     </section>
   );

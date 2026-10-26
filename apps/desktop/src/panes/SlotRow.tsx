@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import type { Region, RenderStatus, Slot } from '../api/types';
+import { stepCount } from '../audio/schedule';
 import { NumberField } from '../components/NumberField';
 import { RenderBadge } from '../components/RenderBadge';
 import { useStore } from '../store';
@@ -16,9 +18,12 @@ interface SlotRowProps {
 }
 
 export function SlotRow({ slot, region, sampleName, render, lastGood, selected, playing }: SlotRowProps) {
+  const [showPattern, setShowPattern] = useState(false);
   const patchSlot = useStore((s) => s.patchSlot);
   const setUi = useStore((s) => s.setUi);
   const openEditor = useStore((s) => s.openEditor);
+  const p = slot.pattern;
+  const patternSummary = p.mode === 'hold' ? 'hold' : `retrigger ${p.division} · ${stepCount(slot.length_beats, p.division)} steps`;
   const regionSymbol = region ? (chordSymbol(region.chord_root, region.chord_quality, region.bass_note) ?? '?') : null;
   const select = () => setUi({ selectedSlotId: selected ? null : slot.id });
   return (
@@ -67,8 +72,11 @@ export function SlotRow({ slot, region, sampleName, render, lastGood, selected, 
         <button type="button" disabled={!slot.region_id} onClick={() => void patchSlot(slot.id, { clear_region: true })} title="clear assignment">
           clear
         </button>
+        <button type="button" className={`disclosure ${showPattern ? 'active' : ''}`} onClick={() => setShowPattern((v) => !v)} title="per-slot pattern: hold, or retrigger on a grid with per-step gate, velocity, probability and offset">
+          {showPattern ? '▾' : '▸'} {patternSummary}
+        </button>
       </div>
-      <PatternEditor slot={slot} />
+      {showPattern && <PatternEditor slot={slot} />}
     </div>
   );
 }
